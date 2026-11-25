@@ -1,0 +1,8 @@
+{
+  "name": "alloy-maker-simulator",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Least-cost aluminum furnace charge solver (HiGHS LP) with what-if UI",
+  "scripts": { "test": "node test/run-tests.js", "serve": "python3 -m http.server 8000" },
+  "devDependencies": { "highs": "1.15.2" }
+}
