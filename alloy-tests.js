@@ -162,7 +162,8 @@
       const pct = recompute(sc, out.result.recipe).pct;
       near(pct.Mg, 1.10, 1e-4, 'Mg pin'); near(pct.Si, 0.70, 1e-4, 'Si pin');
       assert(out.pins && out.pins.delta !== null && out.pins.delta >= -0.01, 'pin delta should be ≥ 0 (pinning only adds constraints)');
-      return `Mg 1.10 + Si 0.70 → +$${out.pins.delta.toFixed(0)} vs unpinned`;
+      near(out.pins.deltaPct, out.pins.delta / out.pins.unpinnedCost * 100, 1e-9, 'delta %');
+      return `Mg 1.10 + Si 0.70 → +$${out.pins.delta.toFixed(0)} (+${out.pins.deltaPct.toFixed(2)}%) vs unpinned`;
     });
 
     t('Unreachable pin is diagnosed as the cause', () => {
@@ -218,6 +219,25 @@
       for (const cl of [{ primary: { min: 60, max: 40 } }, { primary: { min: 60 }, scrap: { min: 50 } }, { scrap: { max: 120 } }]) {
         const out = Core.solveScenario(highs, Sample.scenario('6061', { classLimits: cl }));
         assert(out.status === 'invalid', `${JSON.stringify(cl)} not rejected`);
+      }
+    });
+
+    t('Melt weight is hit exactly; blank lets the furnace range decide', () => {
+      const sc = Sample.scenario('6061'); sc.furnace.meltLbs = 190000;
+      const out = Core.solveScenario(highs, sc, { mode: 'cost', marginals: false });
+      assert(out.status === 'optimal', `status ${out.status}`);
+      near(recompute(sc, out.result.recipe).M, 190000, 0.5, 'melt lbs'); // solver tolerance
+      assert(out.binding.some(b => b.row === 'furnace_melt'), 'fixed melt not reported');
+      const free = Sample.scenario('6061'); free.furnace.meltLbs = null;
+      const R = Core.solveScenario(highs, free, { mode: 'cost', marginals: false }).result;
+      assert(R.meltLbs >= free.furnace.minLbs - 1e-3 && R.meltLbs <= free.furnace.maxLbs + 1e-3, `free melt ${R.meltLbs}`);
+      return `190,000 lbs fixed: $${out.result.cost.toFixed(0)} · free: ${Math.round(R.meltLbs).toLocaleString('en-US')} lbs`;
+    });
+
+    t('Melt weight outside the furnace range is rejected', () => {
+      for (const m of [150000, 250000]) {
+        const sc = Sample.scenario('6061'); sc.furnace.meltLbs = m;
+        assert(Core.solveScenario(highs, sc).status === 'invalid', `${m} not rejected`);
       }
     });
 

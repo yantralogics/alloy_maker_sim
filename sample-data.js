@@ -81,7 +81,7 @@
   ];
 
   const furnaces = [
-    { id: 'F1', name: 'Reverb furnace 1', minLbs: 180000, maxLbs: 200000, heelLbs: 20000 }
+    { id: 'F1', name: 'Reverb furnace 1', minLbs: 180000, maxLbs: 200000, heelLbs: 20000, meltLbs: 180000 }
   ];
 
   // Heel chemistry defaults to the previous heat; here, a 6063 heel.

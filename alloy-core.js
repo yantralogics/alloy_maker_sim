@@ -55,6 +55,13 @@
     if (!(num(f.maxLbs) > 0)) errors.push('Furnace max charge (lbs) must be > 0.');
     if (num(f.minLbs) !== null && num(f.minLbs) > num(f.maxLbs)) errors.push('Furnace min fill is above max.');
     if ((num(f.heelLbs) || 0) > (num(f.maxLbs) || 0)) errors.push('Heel is larger than the furnace max.');
+    // Optional fixed melt weight (heel included); blank lets the optimizer choose within min fill and max.
+    const melt = num(f.meltLbs);
+    if (melt !== null) {
+      const lo = num(f.minLbs) ?? 0, hi = num(f.maxLbs) ?? Infinity, L = v => Math.round(v).toLocaleString('en-US');
+      if (melt < lo || melt > hi) errors.push(`Melt weight ${L(melt)} lbs is outside the furnace range (${L(lo)} to ${L(hi)} lbs).`);
+      else if (melt < (num(f.heelLbs) || 0)) errors.push(`Melt weight ${L(melt)} lbs is less than the heel.`);
+    }
     for (const it of sc.inventory || []) {
       const tag = `Item ${it.id}`;
       if (!MELT_CLASSES.includes(it.melt_class)) warnings.push(`${tag}: unknown melt_class "${it.melt_class}".`);
@@ -76,7 +83,7 @@
       if (need !== null && avail !== null && need > avail + 1e-6) errors.push(`${it.name}: must-use ${Math.round(need).toLocaleString('en-US')} lbs exceeds the ${Math.round(avail).toLocaleString('en-US')} lbs available.`);
     }
     const mandatedLbs = Object.entries(sc.overrides || {}).reduce((s, [id, o]) => s + (inv[id] ? (num(o.lockLbs) ?? num(o.minLbs) ?? 0) * (num(inv[id].recovery) ?? 1) : 0), 0);
-    if (mandatedLbs + (num(f.heelLbs) || 0) > (num(f.maxLbs) || Infinity) + 1e-6) errors.push(`Heel plus must-use items (${Math.round(mandatedLbs + (num(f.heelLbs) || 0)).toLocaleString('en-US')} lbs after melt loss) exceed the furnace max.`);
+    if (mandatedLbs + (num(f.heelLbs) || 0) > (melt ?? num(f.maxLbs) ?? Infinity) + 1e-6) errors.push(`Heel plus must-use items (${Math.round(mandatedLbs + (num(f.heelLbs) || 0)).toLocaleString('en-US')} lbs after melt loss) exceed the ${melt !== null ? 'melt weight' : 'furnace max'}.`);
     if (alloy) for (const e of els) {
       const l = alloy.limits?.[e]; if (!l) continue;
       if (num(l.min) !== null && num(l.max) !== null && num(l.min) > num(l.max)) errors.push(`${alloy.code} ${e}: min above max.`);
@@ -187,7 +194,7 @@
     }
     return {
       els, items, limits, H, heel, groups: groupLimits(sc),
-      Mmin: num(f.minLbs) ?? 0, Mmax: num(f.maxLbs),
+      Mmin: num(f.meltLbs) ?? num(f.minLbs) ?? 0, Mmax: num(f.meltLbs) ?? num(f.maxLbs), meltFixed: num(f.meltLbs) !== null,
       heelEl: Object.fromEntries(els.map(e => [e, H * (num(heel[e]) || 0) / 100]))
     };
   }
@@ -322,8 +329,11 @@
       if ((atU || atL) && Math.abs(r.dual) > 1e-9) binding.push({ row: r.name, dual: r.dual });
     }
     for (const it of recipe) if (it.atUpper && !it.locked) binding.push({ row: `avail_${rname(it.id)}`, dual: it.reducedCost });
-    if (Math.abs(M - p.Mmax) < 1e-3) binding.push({ row: 'furnace_max', dual: C.M.Dual });
-    if (p.Mmin > 0 && Math.abs(M - p.Mmin) < 1e-3) binding.push({ row: 'furnace_min', dual: C.M.Dual });
+    if (p.meltFixed) binding.push({ row: 'furnace_melt', dual: C.M.Dual });
+    else {
+      if (Math.abs(M - p.Mmax) < 1e-3) binding.push({ row: 'furnace_max', dual: C.M.Dual });
+      if (p.Mmin > 0 && Math.abs(M - p.Mmin) < 1e-3) binding.push({ row: 'furnace_min', dual: C.M.Dual });
+    }
     const groupShare = Object.fromEntries(p.groups.map(g => [g.key, M > 0 ? p.items.filter(it => g.classes.includes(it.melt_class)).reduce((s, it) => s + it.r * Math.max(0, C[it.v]?.Primal || 0), 0) / M * 100 : 0]));
     return { meltLbs: M, chargeLbs, heelLbs: p.H, cost, groupShare, costPerLbMelt: M ? cost / M : 0, recipe, chem, rows, binding, solveMs: res.ms };
   }
@@ -335,6 +345,7 @@
     if ((m = row.match(/^avail_(.+)$/))) return `${itemLabel(p, m[1])} availability`;
     if ((m = row.match(/^cap_(.+)$/))) return `${itemLabel(p, m[1])} max ${p.items.find(i => rname(i.id) === m[1])?.maxPct}% of charge`;
     if ((m = row.match(/^grp(min|max)_(.+)$/))) { const g = p.groups.find(x => x.key === m[2]); return `${g?.label} ${m[1]} ${g?.[m[1]]}% of melt`; }
+    if (row === 'furnace_melt') return `Melt weight fixed at ${Math.round(p.Mmax).toLocaleString('en-US')} lbs`;
     if (row === 'furnace_max') return 'Furnace max capacity';
     if (row === 'furnace_min') return 'Furnace min fill';
     return row;
@@ -436,7 +447,8 @@
       result: final, cheapest: costOnly, lp: lpCost, lpTarget,
       // Duals, binding constraints and reduced costs come from the cost-only solve (they explain cost).
       binding: costOnly.binding.map(b => ({ ...b, label: describeRow(b.row, p) })),
-      pins: hasPins ? { values: { ...sc.chemPins }, unpinnedCost: unpinned?.feasible ? unpinned.cost : null, delta: unpinned?.feasible ? costOnly.cost - unpinned.cost : null } : null,
+      pins: hasPins ? { values: { ...sc.chemPins }, unpinnedCost: unpinned?.feasible ? unpinned.cost : null, delta: unpinned?.feasible ? costOnly.cost - unpinned.cost : null,
+        deltaPct: unpinned?.feasible && unpinned.cost > 0 ? (costOnly.cost - unpinned.cost) / unpinned.cost * 100 : null } : null,
       mandates: hasMandates ? { items: p.items.filter(i => i.mandated).map(i => i.id), premium: free?.feasible ? Math.max(0, costOnly.cost - free.cost) : null } : null,
       reducedCosts: costOnly.recipe.filter(r => r.lbs < 1e-6 && !r.locked).map(r => ({ id: r.id, name: r.name, reducedCost: r.reducedCost, unitCost: r.unitCost, enterBelow: r.unitCost - r.reducedCost }))
     };
