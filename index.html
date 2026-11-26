@@ -3,146 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LP Solver Core</title>
+<title>Alloy Maker Simulator</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-/* VOICE: clinical engineering tool — a casthouse charge sheet that explains itself.
-   IDEA: the printed charge sheet: recipe on one side, chemistry check against spec on the other.
-   PICTURE: per-element spec gauge — min–max band, target tick, predicted value; binding limits in carmine.
-   COLOUR and TYPE: white sheet, near-black ink, prussian blue for spec structure, carmine for limits hit; IBM Plex Sans, tabular figures.
-   LAYOUT: controls strip, headline numbers, gauge + recipe side by side, then why (binding, marginal value), model, tests, data. */
-:root{color-scheme:light dark;
---bg:light-dark(#ffffff,#0f1217);--ink:light-dark(#10131a,#e7e9ee);--mute:light-dark(#5b6270,#9aa2b1);
---rule:light-dark(#e3e5ea,#252a33);--panel:light-dark(#f4f6f9,#161a21);
---blue:light-dark(#0b4f8a,#6aa8e6);--band:light-dark(#d6e4f2,#1d3550);--red:light-dark(#c1121f,#ff6b6b);--ok:light-dark(#1d7a46,#5fd08f)}
-:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
-*{box-sizing:border-box;min-width:0}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "IBM Plex Sans",system-ui,sans-serif;overflow-x:clip;font-variant-numeric:tabular-nums}
-.band{padding:clamp(20px,3vw,40px) max(4vw,16px);max-width:1240px;margin:0 auto}
-h1{font-size:clamp(30px,4vw,44px);line-height:1.05;margin:0 0 8px;font-weight:700;text-wrap:balance}
-h2{font-size:22px;line-height:1.2;margin:0 0 4px}
-.sub{color:var(--mute);margin:0;max-width:70ch}
-.controls{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin-top:20px;padding:16px;background:var(--panel);border-radius:10px}
-label{display:grid;gap:4px;font-size:13px;color:var(--mute)}
-select,input,textarea,button{font:inherit;font-size:16px;color:var(--ink)}
-select,input{min-height:44px;padding:0 10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg)}
-input[type=number]{width:110px}
-button{min-height:44px;padding:0 18px;border-radius:8px;border:1px solid var(--blue);background:var(--blue);color:#fff;font-weight:600;cursor:pointer}
-button.ghost{background:transparent;color:var(--blue)}
-button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
-.status{font-size:14px;color:var(--mute);margin-left:auto;align-self:center}
-.kpis{display:flex;flex-wrap:wrap;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:10px;overflow:hidden;margin:20px 0}
-.kpi{flex:1 1 150px;background:var(--bg);padding:14px 16px}.kpi b{display:block;font-size:clamp(22px,3vw,30px);line-height:1.1;white-space:nowrap}.kpi span{font-size:13px;color:var(--mute)}
-.grid{display:grid;grid-template-columns:minmax(0,1fr);gap:28px}
-@media(min-width:1000px){.grid{grid-template-columns:minmax(0,5fr) minmax(0,6fr)}}
-.gauge{display:grid;grid-template-columns:3.2em minmax(0,1fr) 8.5em;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--rule)}
-.gauge .el{font-weight:600}
-.track{position:relative;height:22px;background:var(--panel);border-radius:4px}
-.track .rng{position:absolute;top:3px;bottom:3px;background:var(--band);border-radius:3px}
-.track .tgt{position:absolute;top:0;bottom:0;width:2px;background:var(--blue)}
-.track{touch-action:none;cursor:ew-resize}
-.track .dot{position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;padding:0;min-height:0;border-radius:50%;background:var(--ink);border:2px solid var(--bg);cursor:grab}
-.track .dot::after{content:"";position:absolute;inset:-14px}
-.track .ghost{position:absolute;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;border:1.5px dashed var(--mute)}
-.gauge.pin .dot{background:var(--bg);border:4px solid var(--blue)}.gauge.pin .val{color:var(--blue)}
-.gauge.drag .dot{cursor:grabbing;transform:scale(1.15)}
-.unpin{min-height:0;padding:0 0 0 6px;border:0;background:none;color:var(--blue);font-size:12.5px;font-weight:600;text-decoration:underline;cursor:pointer}
-.pinbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;background:var(--band);border-radius:8px;padding:10px 12px;margin:0 0 10px;font-size:14.5px}
-.pinbar button{min-height:36px;padding:0 12px;font-size:14px}
-.gauge.bind .dot{background:var(--red)}.gauge.bind .val{color:var(--red)}
-.val{font-size:14px;text-align:right;white-space:nowrap}.val small{display:block;color:var(--mute);font-size:12.5px}
-.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--mute);margin:8px 0 12px}
-.legend i{display:inline-block;width:14px;height:10px;vertical-align:middle;margin-right:5px;border-radius:2px}
-table{width:100%;border-collapse:collapse;font-size:14.5px}
-th{font-weight:600;text-align:left;color:var(--mute);font-size:13px;border-bottom:1px solid var(--ink);padding:6px 8px}
-td{padding:7px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
-td.n,th.n{text-align:right;white-space:nowrap}
-.share{height:6px;background:var(--panel);border-radius:3px;margin-top:5px}.share i{display:block;height:100%;background:var(--blue);border-radius:3px}
-.tag{font-size:12.5px;color:var(--mute)}
-section{margin-top:36px}
-.setup{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin-top:12px}
-@media(min-width:1000px){.setup{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}}
-.panel{background:var(--panel);border-radius:10px;padding:14px 16px}
-.panel h3{font-size:16px;margin:0 0 2px}.panel .row{margin:10px 0 0}
-.chemin{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;margin-top:8px}
-.chemin input{width:100%}
-.inv td{padding:5px 6px;vertical-align:middle}.inv select{min-height:40px;font-size:15px;padding:0 6px}.inv input{width:110px;min-height:40px}
-.inv tr.must td:first-child{box-shadow:inset 3px 0 0 var(--blue)}.inv tr.excl{opacity:.55}
-.pill{display:inline-block;font-size:12px;padding:1px 7px;border-radius:10px;background:var(--band);color:var(--ink);margin-left:4px;white-space:nowrap}
-.note{font-size:13px;color:var(--mute);margin:6px 0 12px}
-.bad{color:var(--red)}.good{color:var(--ok)}
-.alert{border-left:4px solid var(--red);background:var(--panel);padding:14px 16px;border-radius:0 8px 8px 0}
-.alert ul{margin:6px 0 0;padding-left:20px}
-pre{background:var(--panel);padding:14px;border-radius:8px;font-size:13px;max-height:420px;overflow:auto;line-height:1.45}
-textarea{width:100%;min-height:220px;padding:10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);font-size:13px;font-family:ui-monospace,Menlo,monospace}
-.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}
-.scroll{overflow-x:auto}
-nav.scroll{display:flex;gap:18px;font-size:14px;margin-top:14px}nav a{color:var(--blue);white-space:nowrap}
-details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:center}
-@media(max-width:600px){table{font-size:13px}.gauge{grid-template-columns:2.6em minmax(0,1fr) 6.6em}.stack thead{display:none}.stack tr{display:grid;padding-block:10px}.stack td{display:flow-root;border:0;padding:3px 0;padding-inline-start:8em;text-align:start}.stack td::before{content:attr(data-l);float:inline-start;width:7.5em;margin-inline-start:-8em;white-space:normal;color:var(--mute)}.stack td:empty{display:none}}
-</style>
+<link rel="stylesheet" href="styles.css?v=0.4.0">
 <script>new MutationObserver(()=>{for(const c of document.querySelectorAll('.stack td:not([data-l])')){let i=0,p=c;while(p=p.previousElementSibling)i+=p.colSpan;c.dataset.l=c.closest('table').rows[0].cells[i]?.textContent||''}}).observe(document,{childList:true,subtree:true})</script>
 </head>
 <body>
 <div class="band">
-  <h1>LP Solver Core</h1>
-  <p class="sub">Least-cost aluminum furnace charge, solved in your browser with HiGHS 1.15.2. Mass in lbs, cost in $/lb, chemistry in wt%. Artifact A3 of the Alloy Maker Simulator.</p>
-  <div class="controls">
-    <label>Target alloy<select id="alloy"></select></label>
-    <label>Objective<select id="mode"><option value="target">Cheapest, then closest to target</option><option value="cost">Cheapest only</option></select></label>
-    <label>Cost tolerance %<input id="tol" type="number" min="0" max="10" step="0.1" value="0.5"></label>
-    <button id="solve" disabled>Solve</button>
-    <span class="status" id="status">Loading HiGHS…</span>
-  </div>
-  <p class="note">Sample inventory, prices and furnace are synthetic. Alloy limits approximate Aluminum Association registrations; check them against your specs.</p>
-  <div class="setup">
-    <div class="panel"><h3>Furnace and heel</h3>
-      <p class="note" style="margin:0" id="furnaceTxt"></p>
-      <div class="row">
-        <label>Heel alloy<select id="heelAlloy"></select></label>
-        <label>Heel weight, lbs<input id="heelLbs" type="number" min="0" step="1000" inputmode="numeric"></label>
+  <header class="top">
+    <div><h1>Alloy Maker Simulator</h1>
+      <p class="sub">Least-cost furnace charge for a target alloy. Mass in lbs, cost in $/lb, chemistry in wt%. Sample inventory, prices and furnace are synthetic; alloy limits approximate Aluminum Association registrations.</p></div>
+  </header>
+  <div class="app">
+    <aside class="side" aria-label="Setup">
+      <div class="solvebar"><button id="solve" disabled>Solve</button><span class="status" id="status" role="status">Loading HiGHS…</span></div>
+
+      <section class="step"><h3><span class="num">1</span>Target</h3>
+        <label>Alloy<select id="alloy"></select></label>
+        <div class="row">
+          <label style="flex:1 1 12em">Objective<select id="mode"><option value="target">Cheapest, then closest to target</option><option value="cost">Cheapest only</option></select></label>
+          <label>Cost tolerance %<input id="tol" type="number" min="0" max="10" step="0.1" value="0.5"></label>
+        </div>
+      </section>
+
+      <section class="step"><h3><span class="num">2</span>Furnace and heel</h3>
+        <p class="note" style="margin:0" id="furnaceTxt"></p>
+        <div class="row">
+          <label style="flex:1 1 10em">Heel alloy<select id="heelAlloy"></select></label>
+          <label>Heel weight, lbs<input id="heelLbs" type="number" min="0" step="1000" inputmode="numeric"></label>
+        </div>
+        <details><summary>Heel chemistry, wt%</summary>
+          <p class="note" style="margin:0">Filled from the heel alloy's target (or mid-spec). Overwrite with the previous heat's spectro result.</p>
+          <div class="chemin" id="heelChem"></div></details>
+      </section>
+
+      <section class="step"><h3><span class="num">3</span>Melt mix limits</h3>
+        <p class="note" style="margin:0">Share of melt lbs (after melt loss; the heel counts in the total) from each class.</p>
+        <table class="mix"><thead><tr><th>Class</th><th class="n">Min %</th><th class="n">Max %</th><th class="n">Now</th></tr></thead><tbody id="mixRows"></tbody></table>
+        <ul class="conflist" id="mixConf" aria-live="polite"></ul>
+        <button class="link" id="clearMix">Reset to 0–100%</button>
+      </section>
+
+      <section class="step"><h3><span class="num">4</span>Inventory</h3>
+        <p class="note" style="margin:0" id="invSum">Inventory</p>
+        <div class="row"><button class="ghost" id="openInv">Pre-assign items…</button><span class="badge" id="invConf" hidden></span></div>
+      </section>
+    </aside>
+
+    <main class="results" aria-label="Results">
+      <div id="out"></div>
+
+      <div class="tabs" role="tablist" aria-label="More detail">
+        <button role="tab" id="tab-why" aria-controls="p-why" aria-selected="true">Why this recipe</button>
+        <button role="tab" id="tab-data" aria-controls="p-data" aria-selected="false" tabindex="-1">Inventory data</button>
+        <button role="tab" id="tab-adv" aria-controls="p-adv" aria-selected="false" tabindex="-1">Advanced</button>
       </div>
-      <details><summary>Heel chemistry, wt%</summary>
-        <p class="note" style="margin:0">Filled from the heel alloy's target (or mid-spec). Overwrite with the previous heat's spectro result.</p>
-        <div class="chemin" id="heelChem"></div></details>
-    </div>
-    <div class="panel"><h3>Must-use items</h3>
-      <p class="note" style="margin:0">Pre-assign items the charge must contain: at least a quantity, or exactly a quantity. You can also exclude items.</p>
-      <details id="invBox"><summary id="invSum">Inventory: 14 items, none pre-assigned</summary>
-        <div class="scroll"><table class="inv stack"><thead><tr><th>Item</th><th class="n">Avail lbs</th><th class="n">$/lb</th><th>Use</th><th>lbs</th></tr></thead><tbody id="invRows"></tbody></table></div>
-        <div class="row"><button class="ghost" id="clearMust">Clear all</button></div>
-      </details>
-    </div>
+      <section role="tabpanel" id="p-why" aria-labelledby="tab-why" class="tabpanel"><div id="why"></div></section>
+      <section role="tabpanel" id="p-data" aria-labelledby="tab-data" class="tabpanel" hidden>
+        <p class="note" id="invChemSum">Inventory chemistry</p>
+        <div class="scroll"><table id="invTbl"></table></div>
+      </section>
+      <section role="tabpanel" id="p-adv" aria-labelledby="tab-adv" class="tabpanel" hidden>
+        <h3>Scenario JSON</h3>
+        <p class="note">Edit the scenario (elements, inventory, alloy, furnace, overrides such as <code>{"SCR-UBC":{"lockLbs":20000}}</code>, classLimits), then solve it.</p>
+        <textarea id="json" spellcheck="false"></textarea>
+        <div class="row"><button id="solveJson" disabled>Solve pasted scenario</button><button class="ghost" id="copyJson">Copy JSON</button><span class="tag" id="jsonMsg"></span></div>
+        <h3>LP model</h3>
+        <p class="note">The cost-only model in CPLEX LP format, generated from the scenario. Duals and marginal values come from this model.</p>
+        <div class="row"><button class="ghost" id="copyLp">Copy LP</button><span class="tag" id="copyMsg"></span></div>
+        <pre id="lp"></pre>
+        <h3>Solver tests</h3>
+        <p class="note">The same suite runs in Node (<code>npm test</code>). Chemistry is recomputed independently from each recipe.</p>
+        <div class="row"><button class="ghost" id="runTests" disabled>Run tests</button><span id="testSum" class="tag"></span></div>
+        <div class="scroll"><table class="stack" id="testTbl"></table></div>
+      </section>
+    </main>
   </div>
-  <nav class="scroll"><a href="#why">Why this recipe</a><a href="#model">LP model</a><a href="#tests">Tests</a><a href="#data">Data</a></nav>
 
-  <div id="out"></div>
-
-  <section id="model"><h2>LP model</h2>
-    <p class="note">The cost-only model in CPLEX LP format, generated from the scenario. Duals and marginal values come from this model.</p>
-    <div class="row"><button class="ghost" id="copyLp">Copy LP</button><span class="tag" id="copyMsg"></span></div>
-    <pre id="lp"></pre></section>
-
-  <section id="tests"><h2>Tests</h2>
-    <p class="note">The same suite runs in Node during development. Chemistry is recomputed independently from each recipe.</p>
-    <div class="row"><button class="ghost" id="runTests" disabled>Run tests</button><span id="testSum" class="tag"></span></div>
-    <div class="scroll"><table class="stack" id="testTbl"></table></div></section>
-
-  <section id="data"><h2>Data</h2>
-    <details><summary>Inventory chemistry (14 items)</summary><div class="scroll"><table id="invTbl"></table></div></details>
-    <details><summary>Use your own scenario: paste JSON</summary>
-      <p class="note">Edit the scenario below (elements, inventory, alloy, furnace, overrides such as <code>{"SCR-UBC":{"lockLbs":20000}}</code>), then solve it.</p>
-      <textarea id="json" spellcheck="false"></textarea>
-      <div class="row"><button id="solveJson" disabled>Solve pasted scenario</button><button class="ghost" id="copyJson">Copy JSON</button><span class="tag" id="jsonMsg"></span></div>
-    </details>
-  </section>
+  <dialog id="invDrawer" class="drawer" aria-labelledby="invTitle">
+    <div class="drawer-head"><h2 id="invTitle">Pre-assign inventory</h2><button class="ghost" id="closeInv" aria-label="Close">Done</button></div>
+    <p class="note">Items the charge must contain (at least, or exactly, a quantity), or must not use. Changes re-solve immediately.</p>
+    <div class="row"><label style="flex:1">Find item<input id="invFind" type="search" placeholder="Name, ID or class"></label><button class="ghost" id="clearMust">Clear all</button></div>
+    <div class="scroll"><table class="inv stack"><thead><tr><th>Item</th><th class="n">Avail lbs</th><th class="n">$/lb</th><th>Use</th><th>lbs</th></tr></thead><tbody id="invRows"></tbody></table></div>
+  </dialog>
 </div>
 
-<script src="highs.js"></script>
-<script src="alloy-core.js"></script>
-<script src="sample-data.js"></script>
-<script src="alloy-tests.js"></script>
+<script>// Any script error during start-up would otherwise leave "Loading HiGHS…" on screen.
+addEventListener('error', e => { const s = document.getElementById('status'); if (s) s.textContent = 'Page error: ' + e.message + ' (try a hard reload)'; });</script>
+<!-- ?v= busts the browser cache when the app version changes; bump it here, on styles.css, and VERSION in alloy-core.js -->
+<script src="highs.js?v=0.4.0"></script>
+<script src="alloy-core.js?v=0.4.0"></script>
+<script src="sample-data.js?v=0.4.0"></script>
+<script src="alloy-tests.js?v=0.4.0"></script>
 <script>
 {
   const $ = id => document.getElementById(id);
@@ -155,6 +108,8 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
 
   const S = AlloySample, Core = AlloyCore;
   $('alloy').innerHTML = S.alloys.map(a => `<option value="${esc(a.code)}">${esc(a.name)}</option>`).join('');
+  $('alloy').value = '6061';
+  $('invChemSum').textContent = `Inventory chemistry (${S.inventory.length} items)`;
 
   async function initHighs() {
     highs = await Module({ locateFile: f => new URL(f, document.baseURI).href });
@@ -180,11 +135,55 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
       <span class="val"><span class="num">${wt(c.pct)}</span><small>${pinned ? `pinned<button class="unpin" data-el="${esc(c.el)}">unpin</button><br>` : ''}${lim}${c.target !== null ? ` · aim ${wt(c.target)}` : ''}</small></span></div>`;
   }
 
+  // ---- element contribution chart ----
+  const SRC = [['heel', 'Heel'], ['primary', 'Primary'], ['internal_scrap', 'Internal scrap'], ['purchased_scrap', 'Purchased scrap'], ['hardener', 'Hardener']];
+  let contribData = {};
+  function contribChart(chem, recipe) {
+    const cls = Object.fromEntries(recipe.map(r => [r.id, r.melt_class]));
+    const order = Object.fromEntries(SRC.map(([k], i) => [k, i]));
+    contribData = {};
+    for (const c of chem) {
+      const total = c.contrib.reduce((s, x) => s + x.lbs, 0);
+      const parts = c.contrib.filter(x => x.lbs > 1e-9).map(x => ({ ...x, cls: x.id === '__heel' ? 'heel' : cls[x.id], share: total ? x.lbs / total * 100 : 0 }))
+        .filter(x => x.share >= 0.05) // trace amounts would only add a gap
+        .sort((a, b) => (order[a.cls] - order[b.cls]) || (b.lbs - a.lbs));
+      contribData[c.el] = { el: c.el, pct: c.pct, parts };
+    }
+    const used = new Set(Object.values(contribData).flatMap(d => d.parts.map(p => p.cls)));
+    const label = d => `${d.el}: ` + (d.parts.length ? d.parts.map(p => `${p.name} ${p.share.toFixed(1)}%`).join(', ') : 'none present');
+    return `<div class="contrib"><h2>Element contribution</h2>
+      <p class="note">Where each element in the melt comes from, as a share of that element's lbs (after recovery). Colour is the source class; gaps separate individual items. Hover or focus a bar for the breakdown.</p>
+      <div class="legend">${SRC.filter(([k]) => used.has(k)).map(([k, n]) => `<span><i style="--c:var(--s-${k})"></i>${n}</span>`).join('')}</div>
+      <div class="cplot"><div class="cy" aria-hidden="true">${[0, 25, 50, 75, 100].map(t => `<span style="bottom:${t}%">${t}%</span>`).join('')}</div>
+        <div class="cbars" id="cbars">${[25, 50, 75, 100].map(t => `<div class="grid-l" style="bottom:${t}%"></div>`).join('')}
+        ${Object.values(contribData).map(d => `<div class="cbar${d.parts.length ? '' : ' none'}" tabindex="0" data-el="${esc(d.el)}" role="img" aria-label="${esc(label(d))}">${d.parts.map(p => `<i style="--f:${p.share.toFixed(4)};--c:var(--s-${p.cls})" data-id="${esc(p.id)}"></i>`).join('')}</div>`).join('')}</div></div>
+      <div class="cx">${Object.values(contribData).map(d => `<div><b>${esc(d.el)}</b><small>${wt(d.pct)}</small></div>`).join('')}</div>
+      <details><summary>Contribution table</summary><div class="scroll"><table class="stack"><thead><tr><th>Element</th>${SRC.filter(([k]) => used.has(k)).map(([, n]) => `<th class="n">${n}</th>`).join('')}</tr></thead><tbody>
+        ${Object.values(contribData).map(d => `<tr><td>${esc(d.el)}</td>${SRC.filter(([k]) => used.has(k)).map(([k]) => { const s = d.parts.filter(p => p.cls === k).reduce((a, p) => a + p.share, 0); return `<td class="n">${s ? s.toFixed(1) + '%' : '—'}</td>`; }).join('')}</tr>`).join('')}
+      </tbody></table></div></details></div>`;
+  }
+  function contribTip(bar, segId) {
+    const wrap = bar.closest('.cplot'), d = contribData[bar.dataset.el]; if (!d) return;
+    let tip = wrap.querySelector('.ctip'); if (!tip) { tip = document.createElement('div'); tip.className = 'ctip'; wrap.appendChild(tip); }
+    tip.innerHTML = `<b>${esc(d.el)}</b> · ${wt(d.pct)} in melt<table>${d.parts.map(p => `<tr${p.id === segId ? ' style="font-weight:600"' : ''}><td><i style="--c:var(--s-${p.cls});display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px"></i>${esc(p.name)}</td><td class="n">${p.share.toFixed(1)}%</td></tr>`).join('') || '<tr><td>Not present</td></tr>'}</table>`;
+    const wr = wrap.getBoundingClientRect(), br = bar.getBoundingClientRect();
+    const left = br.left - wr.left + br.width / 2 - tip.offsetWidth / 2;
+    tip.style.left = Math.max(0, Math.min(left, wr.width - tip.offsetWidth)) + 'px';
+    tip.style.top = Math.max(0, br.top - wr.top - tip.offsetHeight - 8) + 'px';
+    const bars = wrap.querySelector('.cbars'); bars.classList.add('hov');
+    bars.querySelectorAll('.cbar').forEach(b => b.classList.toggle('on', b === bar));
+  }
+  function contribHide(wrap) { wrap?.querySelector('.ctip')?.remove(); wrap?.querySelector('.cbars')?.classList.remove('hov'); }
+  $('out').addEventListener('pointerover', ev => { const b = ev.target.closest?.('.cbar'); if (b) contribTip(b, ev.target.dataset.id); });
+  $('out').addEventListener('pointerout', ev => { const b = ev.target.closest?.('.cbar'); if (b && !b.contains(ev.relatedTarget)) contribHide(b.closest('.cplot')); });
+  $('out').addEventListener('focusin', ev => { if (ev.target.classList?.contains('cbar')) contribTip(ev.target); });
+  $('out').addEventListener('focusout', ev => { if (ev.target.classList?.contains('cbar')) contribHide(ev.target.closest('.cplot')); });
+
   function render(out, sc) {
     last = { out, sc };
     if (out.status === 'invalid') {
       $('out').innerHTML = `<div class="alert" style="margin-top:20px"><b>Input problems</b><ul>${out.validation.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>`;
-      $('lp').textContent = ''; return;
+      $('lp').textContent = ''; $('why').innerHTML = '<p class="note">No recipe to explain: fix the input problems first.</p>'; return;
     }
     $('lp').textContent = out.lp;
     if (out.status === 'infeasible') {
@@ -193,8 +192,10 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
         <p class="note" style="margin:4px 0 10px">HiGHS status: ${esc(out.highsStatus)}. Two smallest-change fixes, found by re-solving with penalised slack:</p>
         ${d.pins ? `<p style="margin:0 0 10px"><b>${d.pins.feasible ? 'The pinned chemistry causes this.' : 'Pins are not the only cause.'}</b> ${d.pins.feasible ? `Unpinned, the cheapest in-spec charge costs ${usd(d.pins.cost)}. Move or clear a pin.` : ''} <button class="ghost" id="clearPins" style="min-height:36px">Clear pins</button></p>` : ''}
         ${d.mandates ? `<p style="margin:0 0 10px"><b>${d.mandates.feasible ? 'The must-use items cause this.' : 'Must-use items are not the only cause.'}</b> ${d.mandates.feasible ? `Without them, an in-spec charge costs ${usd(d.mandates.cost)}. Reduce or remove a must-use quantity.` : 'Even without them no in-spec charge exists.'}</p>` : ''}
+        ${out.classConflicts?.length ? `<p style="margin:0 0 10px"><b>Melt mix limits conflict with the pre-assigned inventory</b> (highlighted in setup): ${out.classConflicts.map(c => esc(c.text)).join(' ')}</p>` : ''}
         <b>Accept off-spec chemistry</b><ul>${list('spec')}</ul>
         <b style="display:block;margin-top:10px">Or change inventory / caps</b><ul>${list('inventory')}</ul></div></section>`;
+      $('why').innerHTML = '<p class="note">No in-spec charge exists, so there is no recipe to explain. See the fixes above.</p>';
       return;
     }
     const R = out.result, C = out.cheapest;
@@ -210,8 +211,13 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
         ${out.mandates ? `<div class="kpi"><b>${out.mandates.premium === null ? '—' : usd(out.mandates.premium)}</b><span>extra cost of must-use items</span></div>` : ''}
         <div class="kpi"><b>${R.solveMs.toFixed(0)} ms</b><span>solve time</span></div>
       </div>
-      <div class="grid">
-        <div><h2>Predicted chemistry vs ${esc(sc.alloy.name)}</h2>
+      <div class="rgrid">
+        <div class="card"><h2>Charge recipe</h2><p class="note">Charged lbs before melt loss. Bars show each item's share of the charge.</p>
+          <div class="scroll"><table class="stack"><thead><tr><th>Item</th><th class="n">lbs</th><th class="n">% charge</th><th class="n">$/lb</th><th class="n">Cost</th></tr></thead><tbody>
+          ${recipe.map(r => `<tr><td>${esc(r.name)}<div class="tag">${esc(r.id)} · ${esc(CLASS[r.melt_class] || r.melt_class)}${r.locked ? `<span class="pill">must use, exactly ${lbs(r.minLbs)}</span>` : r.mandated ? `<span class="pill">must use, ≥ ${lbs(r.minLbs)}</span>` : ''}${r.atUpper && !r.locked ? ' · <span class="bad">all available used</span>' : ''}</div><div class="share"><i style="width:${r.lbs / maxL * 100}%"></i></div></td>
+            <td class="n">${lbs(r.lbs)}</td><td class="n">${r.pctCharge.toFixed(1)}%</td><td class="n">${r.unitCost.toFixed(2)}</td><td class="n">${usd(r.cost)}</td></tr>`).join('')}
+          </tbody></table></div></div>
+        <div class="card"><h2>Predicted chemistry vs ${esc(sc.alloy.name)}</h2>
           <div class="legend"><span><i style="background:var(--band)"></i>spec range</span><span><i style="background:var(--blue);width:3px"></i>target</span><span><i style="background:var(--ink);border-radius:50%;width:10px"></i>predicted</span><span><i style="background:var(--red);border-radius:50%;width:10px"></i>at a limit</span><span><i style="border:3px solid var(--blue);border-radius:50%;width:12px;height:12px"></i>pinned</span></div>
           <p class="note" style="margin-top:0">Drag a dot (or focus it and use the arrow keys) to pin that element and re-solve. Shift + arrow moves 0.1 wt%.</p>
           ${out.pins ? `<div class="pinbar"><span><b>Pinned</b> ${Object.entries(out.pins.values).map(([e, v]) => `${esc(e)} ${wt(v)}`).join(', ')}</span>
@@ -219,13 +225,10 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
             <button class="ghost" id="clearPins">Clear pins</button></div>` : ''}
           ${out.validation.warnings.filter(w => /pinned/.test(w)).map(w => `<p class="note bad" style="margin:0 0 8px">${esc(w)}</p>`).join('')}
           ${R.chem.map(c => gauge(c, bset)).join('')}</div>
-        <div><h2>Charge recipe</h2><p class="note">Charged lbs before melt loss. Bars show each item's share of the charge.</p>
-          <div class="scroll"><table class="stack"><thead><tr><th>Item</th><th class="n">lbs</th><th class="n">% charge</th><th class="n">$/lb</th><th class="n">Cost</th></tr></thead><tbody>
-          ${recipe.map(r => `<tr><td>${esc(r.name)}<div class="tag">${esc(r.id)} · ${esc(CLASS[r.melt_class] || r.melt_class)}${r.locked ? `<span class="pill">must use, exactly ${lbs(r.minLbs)}</span>` : r.mandated ? `<span class="pill">must use, ≥ ${lbs(r.minLbs)}</span>` : ''}${r.atUpper && !r.locked ? ' · <span class="bad">all available used</span>' : ''}</div><div class="share"><i style="width:${r.lbs / maxL * 100}%"></i></div></td>
-            <td class="n">${lbs(r.lbs)}</td><td class="n">${r.pctCharge.toFixed(1)}%</td><td class="n">${r.unitCost.toFixed(2)}</td><td class="n">${usd(r.cost)}</td></tr>`).join('')}
-          </tbody></table></div></div>
       </div>
-      <section id="why"><h2>Why this recipe</h2>
+      <div class="card">${contribChart(R.chem, R.recipe)}</div>`;
+    $('why').innerHTML = `
+      <div>
         <p class="note">From the cheapest-only solve. Saving = cost reduction from re-solving with that one limit relaxed by the step shown.</p>
         <div class="grid"><div><div class="scroll"><table class="stack"><thead><tr><th>Binding constraint</th><th>Relax by</th><th class="n">Saving</th></tr></thead><tbody>
           ${(out.marginals || []).map(m => `<tr><td>${esc(m.label)}</td><td>${esc(m.step)}</td><td class="n">${usd(m.saving)}</td></tr>`).join('') || '<tr><td colspan="3">No binding limits.</td></tr>'}
@@ -234,7 +237,7 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
         <div><div class="scroll"><table class="stack"><thead><tr><th>Unused item</th><th class="n">Now $/lb</th><th class="n">Enters below $/lb</th></tr></thead><tbody>
           ${out.reducedCosts.sort((a, b) => a.reducedCost - b.reducedCost).map(r => `<tr><td>${esc(r.name)}<div class="tag">${esc(r.id)}</div></td><td class="n">${r.unitCost.toFixed(2)}</td><td class="n">${r.enterBelow > 0 ? r.enterBelow.toFixed(3) : 'never at ≥ $0'}</td></tr>`).join('') || '<tr><td colspan="3">Every item is used.</td></tr>'}
         </tbody></table></div><p class="note">“Enters below” is the price at which an unused item would start to appear in the cheapest recipe (from HiGHS reduced costs).</p></div></div>
-      </section>`;
+      </div>`;
   }
 
   // ---- furnace, heel and must-use setup ----
@@ -277,6 +280,35 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
   $('heelLbs').addEventListener('change', () => $('solve').click());
   $('heelChem').addEventListener('change', () => $('solve').click());
 
+  $('mixRows').innerHTML = Core.CLASS_GROUPS.map(g => `<tr id="mix_${g.key}"><td>${esc(g.label)}<div class="tag">${g.classes.map(c => esc(CLASS[c])).join(' + ')}</div></td>
+    <td class="n"><input type="number" min="0" max="100" step="1" value="0" id="mix_${g.key}_min" aria-label="${esc(g.label)} min % of melt"></td>
+    <td class="n"><input type="number" min="0" max="100" step="1" value="100" id="mix_${g.key}_max" aria-label="${esc(g.label)} max % of melt"></td>
+    <td class="n" id="mix_${g.key}_now">—</td></tr>`).join('');
+  const readMix = () => Object.fromEntries(Core.CLASS_GROUPS.map(g => [g.key, { min: +$(`mix_${g.key}_min`).value || 0, max: $(`mix_${g.key}_max`).value === '' ? 100 : +$(`mix_${g.key}_max`).value }]));
+  $('mixRows').addEventListener('change', () => $('solve').click());
+  $('clearMix').addEventListener('click', () => { for (const g of Core.CLASS_GROUPS) { $(`mix_${g.key}_min`).value = 0; $(`mix_${g.key}_max`).value = 100; } $('solve').click(); });
+  // Highlight melt-mix limits that the pre-assigned inventory makes impossible, and the items behind them.
+  function showMix(out) {
+    document.querySelectorAll('.mix tr.conf, .inv tr.conf').forEach(r => r.classList.remove('conf'));
+    document.querySelectorAll('.mix input.conf').forEach(i => i.classList.remove('conf'));
+    document.querySelectorAll('.inv .conftag').forEach(t => t.remove());
+    const share = out.status === 'optimal' ? out.result.groupShare : null;
+    for (const g of Core.CLASS_GROUPS) $(`mix_${g.key}_now`).textContent = share ? share[g.key].toFixed(1) + '%' : '—';
+    const cs = out.classConflicts || [];
+    $('mixConf').innerHTML = cs.map(c => `<li>${esc(c.text)}${c.items.length ? ` Check: ${c.items.map(id => esc(S.inventory.find(i => i.id === id)?.name || id)).join(', ')} <button class="link" data-open-inv>in inventory</button>.` : ''}</li>`).join('');
+    for (const c of cs) {
+      const g = Core.CLASS_GROUPS.find(x => x.key === c.group);
+      $(`mix_${c.group}`).classList.add('conf'); $(`mix_${c.group}_${c.bound}`).classList.add('conf');
+      for (const id of c.items) {
+        const row = $('row_' + id); if (!row) continue;
+        row.classList.add('conf');
+        row.cells[0].insertAdjacentHTML('beforeend', `<div class="tag bad conftag">Conflicts with ${esc(g.label.toLowerCase())} ${c.bound} ${esc(String(g[c.bound] ?? ''))}</div>`);
+      }
+    }
+    const nItems = new Set(cs.flatMap(c => c.items)).size;
+    $('invConf').hidden = !nItems; $('invConf').textContent = `${nItems} item${nItems === 1 ? '' : 's'} in conflict`;
+  }
+
   function currentScenario() {
     const sc = S.scenario($('alloy').value);
     sc.furnace.heelAlloy = $('heelAlloy').value || null;
@@ -284,6 +316,7 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
     sc.furnace.heelComp = Object.fromEntries(S.elements.map(e => [e, Math.max(0, +$('hc_' + e).value || 0)]));
     sc.overrides = readMandates();
     sc.chemPins = { ...chemPins };
+    sc.classLimits = readMix();
     return sc;
   }
   // ---- drag-to-pin on the chemistry gauges ----
@@ -334,7 +367,7 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
   async function solve(sc) {
     $('status').textContent = 'Solving…';
     const out = await safeSolve(sc, { mode: $('mode').value, costTolPct: +$('tol').value || 0 });
-    render(out, sc);
+    render(out, sc); showMix(out);
     $('status').textContent = out.status === 'optimal' ? `Optimal · ${sc.alloy.code}` : out.status === 'infeasible' ? 'Infeasible' : 'Invalid input';
   }
   function fillJson() { $('json').value = JSON.stringify(scenario, null, 1); }
@@ -352,6 +385,32 @@ details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;alig
     try { await navigator.clipboard.writeText(text); msgEl.textContent = 'Copied.'; }
     catch { msgEl.textContent = 'Copy was blocked; select the text and copy it manually.'; }
   }
+  // ---- detail tabs (arrow keys move between tabs) ----
+  const tabs = [...document.querySelectorAll('[role=tab]')];
+  function selectTab(t, focus) {
+    for (const x of tabs) { const on = x === t; x.setAttribute('aria-selected', on); x.tabIndex = on ? 0 : -1; $(x.getAttribute('aria-controls')).hidden = !on; }
+    if (focus) t.focus();
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => selectTab(t));
+    t.addEventListener('keydown', ev => {
+      const d = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
+      if (d) { ev.preventDefault(); selectTab(tabs[(i + d + tabs.length) % tabs.length], true); }
+    });
+  });
+
+  // ---- inventory pre-assignment drawer ----
+  const drawer = $('invDrawer');
+  const openInv = () => { drawer.showModal(); const c = drawer.querySelector('tr.conf'); if (c) c.scrollIntoView({ block: 'center' }); };
+  $('openInv').addEventListener('click', openInv);
+  $('mixConf').addEventListener('click', ev => { if (ev.target.closest('[data-open-inv]')) openInv(); });
+  $('closeInv').addEventListener('click', () => drawer.close());
+  drawer.addEventListener('click', ev => { if (ev.target === drawer) drawer.close(); }); // backdrop click
+  $('invFind').addEventListener('input', () => {
+    const q = $('invFind').value.trim().toLowerCase();
+    for (const r of $('invRows').rows) r.hidden = !!q && !r.cells[0].textContent.toLowerCase().includes(q);
+  });
+
   $('copyLp').addEventListener('click', () => copy($('lp').textContent, $('copyMsg')));
   $('copyJson').addEventListener('click', () => copy($('json').value, $('jsonMsg')));
   $('solve').addEventListener('click', () => { scenario = currentScenario(); fillJson(); solve(scenario); });

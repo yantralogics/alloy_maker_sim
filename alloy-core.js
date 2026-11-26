@@ -5,9 +5,15 @@
  */
 (function (root) {
   'use strict';
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   const MELT_CLASSES = ['primary', 'hardener', 'internal_scrap', 'purchased_scrap'];
   const TOL = 1e-6;
+  // Melt-mix groups: share of melt lbs (heel included in the total) coming from these melt classes.
+  const CLASS_GROUPS = [
+    { key: 'primary', label: 'Primary', classes: ['primary'] },
+    { key: 'internal_scrap', label: 'Internal scrap', classes: ['internal_scrap'] },
+    { key: 'scrap', label: 'All scrap', classes: ['internal_scrap', 'purchased_scrap'] }
+  ];
 
   // ---------- helpers ----------
   const num = v => (v === '' || v === null || v === undefined || Number.isNaN(+v)) ? null : +v;
@@ -85,7 +91,57 @@
       const l = alloy?.limits?.[e] || {};
       if ((num(l.min) !== null && num(v) < num(l.min)) || (num(l.max) !== null && num(v) > num(l.max))) warnings.push(`${e} pinned at ${(+v).toFixed(3)} wt% is outside the ${alloy.code} spec.`);
     }
+    const gl = groupLimits(sc);
+    for (const g of gl) {
+      if (g.min < 0 || g.max > 100) errors.push(`${g.label} limits must be between 0 and 100 % of melt.`);
+      if (g.min > g.max) errors.push(`${g.label}: min ${g.min}% is above max ${g.max}%.`);
+    }
+    const G = Object.fromEntries(gl.map(g => [g.key, g]));
+    if (G.primary.min + G.scrap.min > 100) errors.push(`Primary min (${G.primary.min}%) plus all-scrap min (${G.scrap.min}%) exceed 100 % of melt.`);
+    if (G.internal_scrap.min > G.scrap.max) errors.push(`Internal scrap min (${G.internal_scrap.min}%) is above the all-scrap max (${G.scrap.max}%).`);
     return { ok: !errors.length, errors, warnings };
+  }
+
+  // Melt-mix limits with defaults (0–100 %).
+  function groupLimits(sc) {
+    const cl = sc.classLimits || {};
+    return CLASS_GROUPS.map(g => ({ ...g, min: num(cl[g.key]?.min) ?? 0, max: num(cl[g.key]?.max) ?? 100 }));
+  }
+
+  /* Melt-mix limits that the must-use / exact / excluded items make impossible, before any chemistry.
+   * Group lbs S lie in [mandated, cap] and the melt M = heel + S + other; the share S/M is checked at its extremes. */
+  function classLimitConflicts(sc) {
+    const p = prepare(sc), out = [];
+    const inv = sc.inventory || [], ov = sc.overrides || {};
+    const pct = v => `${(v * 100).toFixed(1)}%`;
+    for (const g of p.groups) {
+      const inG = it => g.classes.includes(it.melt_class);
+      const G = p.items.filter(inG), O = p.items.filter(it => !inG(it));
+      const sum = (xs, f) => xs.reduce((s, it) => s + it.r * f(it), 0);
+      const mandG = sum(G, it => it.lo), capG = sum(G, it => it.hi === Infinity ? p.Mmax : it.hi);
+      const mandO = sum(O, it => it.lo), capO = sum(O, it => it.hi === Infinity ? p.Mmax : it.hi);
+      const excluded = want => inv.filter(it => ov[it.id]?.exclude && g.classes.includes(it.melt_class) === want).map(it => it.id);
+      const fixed = (xs, f) => xs.filter(f).map(it => it.id);
+      if (g.min > 0) {
+        const S = Math.min(capG, p.Mmax - p.H - mandO);
+        const best = S > 0 ? S / Math.max(p.Mmin, p.H + mandO + S) : 0;
+        if (best < g.min / 100 - TOL) {
+          const items = [...fixed(O, it => it.mandated), ...fixed(G, it => it.locked), ...excluded(true)];
+          out.push({ group: g.key, bound: 'min', items, best: best * 100,
+            text: `${g.label} can reach at most ${pct(best)} of the melt with the current heel${items.length ? ' and pre-assigned items' : ''}, below the ${g.min}% min.` });
+        }
+      }
+      if (g.max < 100) {
+        const M = Math.min(p.Mmax, p.H + mandG + capO);
+        const least = M > 0 ? mandG / M : 0;
+        if (least > g.max / 100 + TOL) {
+          const items = [...fixed(G, it => it.mandated), ...fixed(O, it => it.locked), ...excluded(false)];
+          out.push({ group: g.key, bound: 'max', items, least: least * 100,
+            text: `Must-use ${g.label.toLowerCase()} items put at least ${pct(least)} of the melt in this class, above the ${g.max}% max.` });
+        }
+      }
+    }
+    return out;
   }
 
   // ---------- model ----------
@@ -130,7 +186,7 @@
       if (num(pins[e]) !== null) limits[e] = { ...limits[e], specMin: limits[e].min, specMax: limits[e].max, pinned: num(pins[e]), min: num(pins[e]), max: num(pins[e]), target: null };
     }
     return {
-      els, items, limits, H, heel,
+      els, items, limits, H, heel, groups: groupLimits(sc),
       Mmin: num(f.minLbs) ?? 0, Mmax: num(f.maxLbs),
       heelEl: Object.fromEntries(els.map(e => [e, H * (num(heel[e]) || 0) / 100]))
     };
@@ -182,6 +238,17 @@
       const terms = [[1, it.v], [-lim / 100, 'M']];
       if (mode === 'elastic' && opts.relax?.inventory) { terms.push([-1, `sC_${rname(it.id)}`]); extraVars.push([`sC_${rname(it.id)}`, 100 / Mref]); }
       rows.push([rname(`cap_${it.id}`), linexpr(terms), '<=', 0]);
+    }
+    // melt-mix limits: Σ_group r x  ≥ / ≤  pct/100 · M
+    for (const g of p.groups) {
+      const terms = p.items.filter(it => g.classes.includes(it.melt_class)).map(it => [it.r, it.v]);
+      for (const [b, lim0, sense, sl] of [['min', g.min, '>=', 1], ['max', g.max, '<=', -1]]) {
+        if (b === 'min' ? lim0 <= 0 : lim0 >= 100) continue;
+        const row = `grp${b}_${g.key}`, lim = lim0 + (shift[row] || 0);
+        const t = [...terms, [-lim / 100, 'M']];
+        if (mode === 'elastic' && opts.relax?.inventory) { t.push([sl, `sG_${row}`]); extraVars.push([`sG_${row}`, 100 / Mref]); }
+        rows.push([row, linexpr(t), sense, 0]);
+      }
     }
     if (mode === 'target') rows.push(['costcap', linexpr(p.items.map(it => [it.cost, it.v])), '<=', opts.costCap]);
 
@@ -257,7 +324,8 @@
     for (const it of recipe) if (it.atUpper && !it.locked) binding.push({ row: `avail_${rname(it.id)}`, dual: it.reducedCost });
     if (Math.abs(M - p.Mmax) < 1e-3) binding.push({ row: 'furnace_max', dual: C.M.Dual });
     if (p.Mmin > 0 && Math.abs(M - p.Mmin) < 1e-3) binding.push({ row: 'furnace_min', dual: C.M.Dual });
-    return { meltLbs: M, chargeLbs, heelLbs: p.H, cost, costPerLbMelt: M ? cost / M : 0, recipe, chem, rows, binding, solveMs: res.ms };
+    const groupShare = Object.fromEntries(p.groups.map(g => [g.key, M > 0 ? p.items.filter(it => g.classes.includes(it.melt_class)).reduce((s, it) => s + it.r * Math.max(0, C[it.v]?.Primal || 0), 0) / M * 100 : 0]));
+    return { meltLbs: M, chargeLbs, heelLbs: p.H, cost, groupShare, costPerLbMelt: M ? cost / M : 0, recipe, chem, rows, binding, solveMs: res.ms };
   }
 
   const itemLabel = (p, rid) => { const it = p.items.find(i => rname(i.id) === rid); return it ? `${it.name} (${it.id})` : rid; };
@@ -266,6 +334,7 @@
     if ((m = row.match(/^(min|max)_(.+)$/))) return p.limits[m[2]]?.pinned !== undefined ? `${m[2]} pinned at ${p.limits[m[2]].pinned} wt%` : `${m[2]} ${m[1]} ${p.limits[m[2]]?.[m[1]]} wt%`;
     if ((m = row.match(/^avail_(.+)$/))) return `${itemLabel(p, m[1])} availability`;
     if ((m = row.match(/^cap_(.+)$/))) return `${itemLabel(p, m[1])} max ${p.items.find(i => rname(i.id) === m[1])?.maxPct}% of charge`;
+    if ((m = row.match(/^grp(min|max)_(.+)$/))) { const g = p.groups.find(x => x.key === m[2]); return `${g?.label} ${m[1]} ${g?.[m[1]]}% of melt`; }
     if (row === 'furnace_max') return 'Furnace max capacity';
     if (row === 'furnace_min') return 'Furnace min fill';
     return row;
@@ -280,6 +349,8 @@
       if ((m = b.row.match(/^min_(.+)$/))) { shift[b.row] = -0.01; step = 'min −0.01 wt%'; }
       else if ((m = b.row.match(/^max_(.+)$/))) { shift[b.row] = 0.01; step = 'max +0.01 wt%'; }
       else if ((m = b.row.match(/^cap_(.+)$/))) { shift[b.row] = 1; step = 'cap +1 % of charge'; }
+      else if ((m = b.row.match(/^grpmin_/))) { shift[b.row] = -1; step = 'min −1 % of melt'; }
+      else if ((m = b.row.match(/^grpmax_/))) { shift[b.row] = 1; step = 'max +1 % of melt'; }
       else if ((m = b.row.match(/^avail_(.+)$/))) { shift[b.row] = 1000; step = '+1,000 lbs available'; }
       else continue;
       const res = runHighs(highs, buildLP(p, { mode: 'cost', limitShift: shift }));
@@ -299,13 +370,14 @@
       const C = res.Columns, M = C.M.Primal, Mref = p.Mmax;
       const v = [];
       for (const [name, col] of Object.entries(C)) {
-        if (!/^s[LUBCF]_?/.test(name) || col.Primal < 1e-6) continue;
+        if (!/^s[LUBCFG]_?/.test(name) || col.Primal < 1e-6) continue;
         const amt = col.Primal;
         let m;
         if ((m = name.match(/^sL_(.+)$/))) v.push({ kind: 'spec', text: `${m[1]} below ${p.limits[m[1]]?.pinned !== undefined ? 'pinned value' : 'min'} by ${(amt / M * 100).toFixed(3)} wt%`, el: m[1], wtPct: -amt / M * 100 });
         else if ((m = name.match(/^sU_(.+)$/))) v.push({ kind: 'spec', text: `${m[1]} above ${p.limits[m[1]]?.pinned !== undefined ? 'pinned value' : 'max'} by ${(amt / M * 100).toFixed(3)} wt%`, el: m[1], wtPct: amt / M * 100 });
         else if ((m = name.match(/^sB_(.+)$/))) v.push({ kind: 'inventory', text: `Need ${Math.round(amt).toLocaleString('en-US')} lbs more of ${itemLabel(p, m[1])}`, item: m[1], lbs: amt });
         else if ((m = name.match(/^sC_(.+)$/))) v.push({ kind: 'inventory', text: `Raise ${itemLabel(p, m[1])} cap by ${(amt / M * 100).toFixed(1)} % of charge`, item: m[1], lbs: amt });
+        else if ((m = name.match(/^sG_grp(min|max)_(.+)$/))) { const g = p.groups.find(x => x.key === m[2]); v.push({ kind: 'inventory', text: `${m[1] === 'min' ? 'Lower' : 'Raise'} the ${g.label.toLowerCase()} ${m[1]} by ${(amt / M * 100).toFixed(1)} % of melt`, group: m[2], pct: amt / M * 100 }); }
         else if (name === 'sF') v.push({ kind: 'inventory', text: `Short of furnace min fill by ${Math.round(amt).toLocaleString('en-US')} lbs`, lbs: amt });
       }
       diag[key] = { feasible: true, violations: v, lp };
@@ -329,6 +401,7 @@
     const v = validateScenario(sc);
     if (!v.ok) return { status: 'invalid', validation: v };
     const p = prepare(sc);
+    const classConflicts = classLimitConflicts(sc);
     const hasMandates = p.items.some(i => i.mandated);
     const lpCost = buildLP(p, { mode: 'cost' });
     const r1 = runHighs(highs, lpCost);
@@ -347,7 +420,7 @@
       const diagnosis = elasticDiagnose(highs, p);
       if (hasMandates) diagnosis.mandates = free;
       if (hasPins) diagnosis.pins = unpinned;
-      return { status: 'infeasible', highsStatus: r1.Status, validation: v, lp: lpCost, diagnosis, solveMs: r1.ms };
+      return { status: 'infeasible', highsStatus: r1.Status, validation: v, classConflicts, lp: lpCost, diagnosis, solveMs: r1.ms };
     }
     const costOnly = parse(p, r1);
     let final = costOnly, lpTarget = null;
@@ -359,7 +432,7 @@
       if (isOptimal(r2)) { final = parse(p, r2); final.solveMs += costOnly.solveMs; }
     }
     const out = {
-      status: 'optimal', mode: mode === 'target' && hasTargets ? 'target' : 'cost', validation: v,
+      status: 'optimal', mode: mode === 'target' && hasTargets ? 'target' : 'cost', validation: v, classConflicts,
       result: final, cheapest: costOnly, lp: lpCost, lpTarget,
       // Duals, binding constraints and reduced costs come from the cost-only solve (they explain cost).
       binding: costOnly.binding.map(b => ({ ...b, label: describeRow(b.row, p) })),
@@ -383,7 +456,7 @@
     return out;
   }
 
-  const api = { VERSION, heelChemFromAlloy, withoutMandates, MELT_CLASSES, validateScenario, prepare, buildLP, solveScenario, describeRow };
+  const api = { VERSION, CLASS_GROUPS, groupLimits, classLimitConflicts, heelChemFromAlloy, withoutMandates, MELT_CLASSES, validateScenario, prepare, buildLP, solveScenario, describeRow };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AlloyCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

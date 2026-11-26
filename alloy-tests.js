@@ -28,7 +28,7 @@
       }
     }
 
-    for (const code of ['6061', '6063', 'A356', '3003']) {
+    for (const code of Sample.alloys.map(a => a.code)) {
       t(`${code}: optimal, in spec, within furnace and inventory limits`, () => {
         const sc = Sample.scenario(code);
         const out = Core.solveScenario(highs, sc, { mode: 'cost', marginals: false });
@@ -99,7 +99,9 @@
     });
 
     t('Inventory shortfall diagnosis suggests purchase quantity', () => {
-      const ov = { 'PRI-1020': { availableLbs: 20000 }, 'PRI-0303': { exclude: true }, 'SCR-6063-EXT': { exclude: true }, 'SCR-A356-WHL': { exclude: true } };
+      // only P1020 (20,000 lbs on hand) and hardeners: the furnace cannot be filled
+      const ov = { 'PRI-1020': { availableLbs: 20000 } };
+      for (const it of Sample.inventory) if (it.id !== 'PRI-1020' && it.melt_class !== 'hardener') ov[it.id] = { exclude: true };
       const out = Core.solveScenario(highs, Sample.scenario('6063', { overrides: ov }), { mode: 'cost' });
       assert(out.status === 'infeasible', `status ${out.status}`);
       const inv = out.diagnosis.inventory;
@@ -167,6 +169,56 @@
       const out = Core.solveScenario(highs, Sample.scenario('6061', { chemPins: { Fe: 0.03 } }), { mode: 'cost' });
       assert(out.status === 'infeasible', `status ${out.status}`);
       assert(out.diagnosis.pins?.feasible, 'unpinned should be feasible');
+    });
+
+    // share of melt lbs from a set of melt classes, recomputed from the recipe
+    function classShare(sc, recipe, classes) {
+      const M = recompute(sc, recipe).M;
+      return recipe.reduce((s, r) => { const it = sc.inventory.find(i => i.id === r.id); return s + (classes.includes(it.melt_class) ? r.lbs * it.recovery : 0); }, 0) / M * 100;
+    }
+
+    t('Default melt-mix limits (0–100 %) add no constraints', () => {
+      const out = Core.solveScenario(highs, Sample.scenario('6061', { classLimits: { primary: { min: 0, max: 100 } } }), { mode: 'cost', marginals: false });
+      assert(!/grp(min|max)_/.test(out.lp), 'LP has melt-mix rows');
+    });
+
+    t('Melt-mix min / max limits are honoured', () => {
+      const base = Core.solveScenario(highs, Sample.scenario('6061'), { mode: 'cost', marginals: false });
+      const sc = Sample.scenario('6061', { classLimits: { primary: { min: 25 }, internal_scrap: { max: 30 }, scrap: { min: 50, max: 70 } } });
+      const out = Core.solveScenario(highs, sc, { mode: 'cost', marginals: false });
+      assert(out.status === 'optimal', `status ${out.status}`);
+      const R = out.result, pri = classShare(sc, R.recipe, ['primary']), int = classShare(sc, R.recipe, ['internal_scrap']), all = classShare(sc, R.recipe, ['internal_scrap', 'purchased_scrap']);
+      assert(pri >= 25 - 1e-4, `primary ${pri}`); assert(int <= 30 + 1e-4, `internal ${int}`); assert(all >= 50 - 1e-4 && all <= 70 + 1e-4, `scrap ${all}`);
+      near(R.groupShare.primary, pri, 1e-4, 'reported primary share');
+      inSpec(sc, recompute(sc, R.recipe).pct);
+      assert(R.cost >= base.result.cost - 0.01, 'extra limits lowered cost');
+      return `primary ${pri.toFixed(1)}% · internal ${int.toFixed(1)}% · scrap ${all.toFixed(1)}% → +$${(R.cost - base.result.cost).toFixed(0)}`;
+    });
+
+    t('Must-use items above a melt-mix max are flagged', () => {
+      const sc = Sample.scenario('6061', { overrides: { 'SCR-6061-INT': { lockLbs: 100000 } }, classLimits: { internal_scrap: { max: 20 } } });
+      const out = Core.solveScenario(highs, sc, { mode: 'cost', marginals: false });
+      const c = out.classConflicts.find(x => x.group === 'internal_scrap' && x.bound === 'max');
+      assert(c && c.items.includes('SCR-6061-INT'), 'conflict not flagged');
+      assert(out.status === 'infeasible', `status ${out.status}`);
+      return c.text;
+    });
+
+    t('Must-use items crowding out a melt-mix min are flagged', () => {
+      const sc = Sample.scenario('6061', { overrides: { 'PRI-1020': { lockLbs: 150000 } }, classLimits: { scrap: { min: 50 } } });
+      const out = Core.solveScenario(highs, sc, { mode: 'cost', marginals: false });
+      const c = out.classConflicts.find(x => x.group === 'scrap' && x.bound === 'min');
+      assert(c && c.items.includes('PRI-1020'), 'conflict not flagged');
+      const ok = Core.solveScenario(highs, Sample.scenario('6061', { classLimits: { scrap: { min: 50 } } }), { mode: 'cost', marginals: false });
+      assert(!ok.classConflicts.length, 'false conflict without must-use items');
+      return c.text;
+    });
+
+    t('Melt-mix limits that cannot hold are rejected', () => {
+      for (const cl of [{ primary: { min: 60, max: 40 } }, { primary: { min: 60 }, scrap: { min: 50 } }, { scrap: { max: 120 } }]) {
+        const out = Core.solveScenario(highs, Sample.scenario('6061', { classLimits: cl }));
+        assert(out.status === 'invalid', `${JSON.stringify(cl)} not rejected`);
+      }
     });
 
     t('Validation rejects bad input', () => {

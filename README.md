@@ -8,6 +8,7 @@ Static site: no server and no build step. Sample inventory, prices and furnace d
 | File | Purpose |
 | --- | --- |
 | `index.html` | The app page |
+| `styles.css` | Page styles (linked with a `?v=` version tag; bump it with each release) |
 | `alloy-core.js` | LP builder, solver wrapper, diagnostics (shared core) |
 | `sample-data.js` | Synthetic inventory, alloy specs, furnace |
 | `alloy-tests.js` | Test suite (runs in the page and in Node) |
