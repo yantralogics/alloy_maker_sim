@@ -5,7 +5,7 @@
  */
 (function (root) {
   'use strict';
-  const VERSION = '0.4.0';
+  const VERSION = '0.5.0';
   const MELT_CLASSES = ['primary', 'hardener', 'internal_scrap', 'purchased_scrap'];
   const TOL = 1e-6;
   // Melt-mix groups: share of melt lbs (heel included in the total) coming from these melt classes.
@@ -204,6 +204,9 @@
    * opts.costCap: number (target mode: Σ c x ≤ costCap)
    * opts.relax: { spec: bool, inventory: bool } (elastic mode)
    * opts.limitShift: { [rowName]: deltaWtPctOrLbs } for marginal re-solves
+   * mode 'stable': among charges no worse than costCap (and devCap, the target deviation, when given),
+   *   pick the one closest to opts.base ({ [var]: lbs }). Used so a pinned charge only differs from
+   *   its unpinned baseline where the pin requires it, not by swapping between equally cheap items.
    */
   function buildLP(p, opts = {}) {
     const mode = opts.mode || 'cost';
@@ -211,6 +214,8 @@
     const obj = [], rows = [], bounds = [];
     const Mref = p.Mmax;
     const extraVars = [];
+    const useTargets = mode === 'target' || (mode === 'stable' && opts.devCap !== undefined && opts.devCap !== null);
+    const devTerms = [];
     if (mode === 'cost') for (const it of p.items) obj.push([it.cost, it.v]);
 
     // melt mass balance: M - Σ r x = H
@@ -232,11 +237,11 @@
         if (mode === 'elastic' && opts.relax?.spec) { terms.push([-1, `sU_${e}`]); extraVars.push([`sU_${e}`, 100 / Mref]); }
         rows.push([rname(`max_${e}`), linexpr(terms), '<=', -p.heelEl[e]]);
       }
-      if (mode === 'target' && L.target !== null) {
+      if (useTargets && L.target !== null) {
         const width = (L.min !== null && L.max !== null) ? Math.max(L.max - L.min, 1e-3) : Math.max(L.max ?? L.target, 1e-3);
         const w = 100 / (Mref * width); // per lb of element deviation → wt% / range-width
         rows.push([rname(`tgt_${e}`), linexpr([...base, [-L.target / 100, 'M'], [-1, `dP_${e}`], [1, `dM_${e}`]]), '=', -p.heelEl[e]]);
-        obj.push([w, `dP_${e}`], [w, `dM_${e}`]);
+        (mode === 'target' ? obj : devTerms).push([w, `dP_${e}`], [w, `dM_${e}`]);
       }
     }
     // percentage caps: x ≤ pct/100 · M
@@ -257,7 +262,16 @@
         rows.push([row, linexpr(t), sense, 0]);
       }
     }
-    if (mode === 'target') rows.push(['costcap', linexpr(p.items.map(it => [it.cost, it.v])), '<=', opts.costCap]);
+    if (mode === 'target' || mode === 'stable') rows.push(['costcap', linexpr(p.items.map(it => [it.cost, it.v])), '<=', opts.costCap]);
+    if (mode === 'stable') {
+      if (devTerms.length) rows.push(['devcap', linexpr(devTerms), '<=', opts.devCap]);
+      // x - up + down = base; minimise total movement (lbs, scaled like the other penalties)
+      for (const it of p.items) {
+        const up = `mU_${rname(it.id)}`, dn = `mD_${rname(it.id)}`;
+        rows.push([rname(`stb_${it.id}`), linexpr([[1, it.v], [-1, up], [1, dn]]), '=', opts.base?.[it.v] || 0]);
+        extraVars.push([up, 1 / Mref], [dn, 1 / Mref]);
+      }
+    }
 
     // bounds; availability shortfall as purchase slack in elastic-inventory mode
     for (const it of p.items) {
@@ -271,7 +285,7 @@
       bounds.push(`${fmt(it.lo)} <= ${it.v} <= ${hi === Infinity ? '+inf' : fmt(hi)}`);
     }
     bounds.push(`${fmt(p.Mmin)} <= M <= ${fmt(p.Mmax)}`);
-    if (mode === 'target') for (const e of p.els) if (p.limits[e].target !== null) bounds.push(`dP_${e} >= 0`, `dM_${e} >= 0`);
+    if (useTargets) for (const e of p.els) if (p.limits[e].target !== null) bounds.push(`dP_${e} >= 0`, `dM_${e} >= 0`);
     for (const [v, w] of extraVars) { obj.push([w, v]); bounds.push(`${v} >= 0`); }
     if (!obj.length) obj.push([0, 'M']);
 
@@ -298,7 +312,7 @@
       const lbs = Math.max(0, col ? col.Primal : 0);
       return {
         id: it.id, name: it.name, melt_class: it.melt_class, lbs, cost: lbs * it.cost, unitCost: it.cost,
-        pctCharge: 0, reducedCost: col ? col.Dual : 0, atUpper: lbs >= it.hi - 1e-3 && it.hi < Infinity,
+        meltLbs: lbs * it.r, pctCharge: 0, reducedCost: col ? col.Dual : 0, atUpper: lbs >= it.hi - 1e-3 && it.hi < Infinity,
         avail: it.avail, locked: it.locked, mandated: it.mandated, minLbs: it.lo
       };
     });
@@ -422,38 +436,81 @@
       free = isOptimal(rf) ? { feasible: true, cost: rf.ObjectiveValue } : { feasible: false };
     }
     const hasPins = Object.keys(sc.chemPins || {}).length > 0;
-    let unpinned = null;
+    const hasTargets = p.els.some(e => p.limits[e].target !== null);
+    const tol = (opts.costTolPct ?? 5) / 100;
+    // Pins are compared with the unpinned charge solved under the same objective (opts.baseline reuses one, e.g. while dragging).
+    let baseline = null;
     if (hasPins) {
-      const ru = runHighs(highs, buildLP(prepare({ ...sc, chemPins: {} }), { mode: 'cost' }));
-      unpinned = isOptimal(ru) ? { feasible: true, cost: ru.ObjectiveValue } : { feasible: false };
+      if (opts.baseline) baseline = opts.baseline;
+      else {
+        const pu = prepare({ ...sc, chemPins: {} });
+        const b = objectiveSolve(highs, pu, mode === 'target' && pu.els.some(e => pu.limits[e].target !== null), tol);
+        baseline = b ? { feasible: true, cost: b.final.cost, cheapestCost: b.costOnly.cost, result: b.final } : { feasible: false };
+      }
     }
     if (!isOptimal(r1)) {
       const diagnosis = elasticDiagnose(highs, p);
       if (hasMandates) diagnosis.mandates = free;
-      if (hasPins) diagnosis.pins = unpinned;
+      if (hasPins) diagnosis.pins = baseline.feasible ? { feasible: true, cost: baseline.cheapestCost } : { feasible: false };
       return { status: 'infeasible', highsStatus: r1.Status, validation: v, classConflicts, lp: lpCost, diagnosis, solveMs: r1.ms };
     }
     const costOnly = parse(p, r1);
-    let final = costOnly, lpTarget = null;
-    const hasTargets = p.els.some(e => p.limits[e].target !== null);
+    let final = costOnly, lpTarget = null, dev = null;
     if (mode === 'target' && hasTargets) {
-      const tol = (opts.costTolPct ?? 0.5) / 100;
-      lpTarget = buildLP(p, { mode: 'target', costCap: costOnly.cost * (1 + tol) + 1e-6 });
+      // A pinned charge gets no more target-seeking budget than the unpinned charge spent, so its cost
+      // change is the pin's own cost and a pin at the current value reproduces the baseline.
+      const cap = hasPins && baseline.feasible ? Math.max(costOnly.cost, baseline.cost) : costOnly.cost * (1 + tol);
+      lpTarget = buildLP(p, { mode: 'target', costCap: cap + 1e-6 });
       const r2 = runHighs(highs, lpTarget);
-      if (isOptimal(r2)) { final = parse(p, r2); final.solveMs += costOnly.solveMs; }
+      if (isOptimal(r2)) { final = parse(p, r2); final.solveMs += costOnly.solveMs; dev = r2.ObjectiveValue; }
+    }
+    let pinInfo = null;
+    if (hasPins) {
+      if (baseline.feasible) {
+        // Among charges as cheap (and as close to target) as this one, take the one nearest the baseline.
+        const base = Object.fromEntries(baseline.result.recipe.map(r => [p.items.find(i => i.id === r.id)?.v, r.lbs]));
+        const rs = runHighs(highs, buildLP(p, { mode: 'stable', base, costCap: final.cost + Math.max(0.01, final.cost * 1e-7), devCap: dev === null ? null : dev * (1 + 1e-6) + 1e-7 }));
+        if (isOptimal(rs)) { const ms = final.solveMs; final = parse(p, rs); final.solveMs = ms + rs.ms; }
+      }
+      pinInfo = pinChanges(sc, final, baseline);
     }
     const out = {
       status: 'optimal', mode: mode === 'target' && hasTargets ? 'target' : 'cost', validation: v, classConflicts,
       result: final, cheapest: costOnly, lp: lpCost, lpTarget,
       // Duals, binding constraints and reduced costs come from the cost-only solve (they explain cost).
       binding: costOnly.binding.map(b => ({ ...b, label: describeRow(b.row, p) })),
-      pins: hasPins ? { values: { ...sc.chemPins }, unpinnedCost: unpinned?.feasible ? unpinned.cost : null, delta: unpinned?.feasible ? costOnly.cost - unpinned.cost : null,
-        deltaPct: unpinned?.feasible && unpinned.cost > 0 ? (costOnly.cost - unpinned.cost) / unpinned.cost * 100 : null } : null,
+      pins: pinInfo,
       mandates: hasMandates ? { items: p.items.filter(i => i.mandated).map(i => i.id), premium: free?.feasible ? Math.max(0, costOnly.cost - free.cost) : null } : null,
       reducedCosts: costOnly.recipe.filter(r => r.lbs < 1e-6 && !r.locked).map(r => ({ id: r.id, name: r.name, reducedCost: r.reducedCost, unitCost: r.unitCost, enterBelow: r.unitCost - r.reducedCost }))
     };
     if (opts.marginals !== false) out.marginals = marginals(highs, p, costOnly);
     return out;
+  }
+
+  // Cheapest charge, then (optionally) closest to target within tol of that cost. Null when infeasible.
+  function objectiveSolve(highs, p, target, tol) {
+    const r1 = runHighs(highs, buildLP(p, { mode: 'cost' }));
+    if (!isOptimal(r1)) return null;
+    const costOnly = parse(p, r1);
+    if (!target) return { costOnly, final: costOnly, dev: null };
+    const r2 = runHighs(highs, buildLP(p, { mode: 'target', costCap: costOnly.cost * (1 + tol) + 1e-6 }));
+    return isOptimal(r2) ? { costOnly, final: parse(p, r2), dev: r2.ObjectiveValue } : { costOnly, final: costOnly, dev: null };
+  }
+
+  /* Pin effect: cost change and per-item lbs / cost change against the unpinned baseline.
+   * Item cost changes (Δlbs × $/lb) sum exactly to the total cost change. */
+  function pinChanges(sc, final, baseline) {
+    const info = { values: { ...sc.chemPins }, unpinnedCost: null, delta: null, deltaPct: null, baseline: baseline.feasible ? baseline : null, changes: [] };
+    if (!baseline.feasible) return info;
+    const before = Object.fromEntries(baseline.result.recipe.map(r => [r.id, r.lbs]));
+    info.unpinnedCost = baseline.cost;
+    info.delta = final.cost - baseline.cost;
+    info.deltaPct = baseline.cost > 0 ? info.delta / baseline.cost * 100 : null;
+    info.changes = final.recipe.map(r => {
+      const from = before[r.id] || 0, d = r.lbs - from;
+      return { id: r.id, name: r.name, melt_class: r.melt_class, from, to: r.lbs, dLbs: d, dCost: d * r.unitCost };
+    }).filter(c => Math.abs(c.dLbs) >= 0.5);
+    return info;
   }
 
   /* Heel chemistry from an alloy spec: target, else mid-range, else half the max, else 0.
@@ -468,7 +525,7 @@
     return out;
   }
 
-  const api = { VERSION, CLASS_GROUPS, groupLimits, classLimitConflicts, heelChemFromAlloy, withoutMandates, MELT_CLASSES, validateScenario, prepare, buildLP, solveScenario, describeRow };
+  const api = { VERSION, CLASS_GROUPS, pinChanges, groupLimits, classLimitConflicts, heelChemFromAlloy, withoutMandates, MELT_CLASSES, validateScenario, prepare, buildLP, solveScenario, describeRow };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AlloyCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

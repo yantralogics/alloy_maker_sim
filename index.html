@@ -6,7 +6,7 @@
 <title>Alloy Maker Simulator</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=0.4.0">
+<link rel="stylesheet" href="styles.css?v=0.5.0">
 <script>new MutationObserver(()=>{for(const c of document.querySelectorAll('.stack td:not([data-l])')){let i=0,p=c;while(p=p.previousElementSibling)i+=p.colSpan;c.dataset.l=c.closest('table').rows[0].cells[i]?.textContent||''}}).observe(document,{childList:true,subtree:true})</script>
 </head>
 <body>
@@ -22,8 +22,12 @@
       <section class="step"><h3><span class="num">1</span>Target</h3>
         <label>Alloy<select id="alloy"></select></label>
         <div class="row">
-          <label style="flex:1 1 12em">Objective<select id="mode"><option value="target">Cheapest, then closest to target</option><option value="cost">Cheapest only</option></select></label>
-          <label>Cost tolerance %<input id="tol" type="number" min="0" max="10" step="0.1" value="0.5"></label>
+          <label style="flex:1 1 12em">Objective<select id="mode">
+            <option value="cost">Cheapest only</option>
+
+            <option value="target">Cheapest, then closest to target</option>
+                      </select></label>
+          <label>Cost tolerance %<input id="tol" type="number" min="0" max="10" step="0.1" value="5"></label>
         </div>
       </section>
 
@@ -94,10 +98,10 @@
 <script>// Any script error during start-up would otherwise leave "Loading HiGHS…" on screen.
 addEventListener('error', e => { const s = document.getElementById('status'); if (s) s.textContent = 'Page error: ' + e.message + ' (try a hard reload)'; });</script>
 <!-- ?v= busts the browser cache when the app version changes; bump it here, on styles.css, and VERSION in alloy-core.js -->
-<script src="highs.js?v=0.4.0"></script>
-<script src="alloy-core.js?v=0.4.0"></script>
-<script src="sample-data.js?v=0.4.0"></script>
-<script src="alloy-tests.js?v=0.4.0"></script>
+<script src="highs.js?v=0.5.0"></script>
+<script src="alloy-core.js?v=0.5.0"></script>
+<script src="sample-data.js?v=0.5.0"></script>
+<script src="alloy-tests.js?v=0.5.0"></script>
 <script>
 {
   const $ = id => document.getElementById(id);
@@ -123,7 +127,7 @@ addEventListener('error', e => { const s = document.getElementById('status'); if
     }
   }
 
-  function gauge(c, bindingRows) {
+  function gauge(c, bindingRows, was) {
     const hi = Math.max(c.max ?? 0, c.target ?? 0, c.pct, c.min ?? 0) * 1.25 || 1;
     const pos = v => Math.max(0, Math.min(100, v / hi * 100));
     const lo = c.min ?? 0, up = c.max ?? hi;
@@ -133,12 +137,75 @@ addEventListener('error', e => { const s = document.getElementById('status'); if
     return `<div class="gauge${bind ? ' bind' : ''}${pinned ? ' pin' : ''}" title="${esc(c.el)}: ${wt(c.pct)} wt%">
       <span class="el">${esc(c.el)}</span>
       <div class="track" data-el="${esc(c.el)}" data-hi="${hi}" data-v="${c.pct}">${c.min !== null || c.max !== null ? `<i class="rng" style="left:${pos(lo)}%;width:${pos(up) - pos(lo)}%"></i>` : ''}
-        ${c.target !== null ? `<i class="tgt" style="left:${pos(c.target)}%"></i>` : ''}<button class="dot" style="left:${pos(c.pct)}%" aria-label="${esc(c.el)} ${wt(c.pct)} wt%. Drag, or use arrow keys, to pin a value"></button></div>
+        ${c.target !== null ? `<i class="tgt" style="left:${pos(c.target)}%"></i>` : ''}${was !== undefined && !pinned && Math.abs(was - c.pct) > 5e-4 ? `<i class="was" style="left:${pos(was)}%" title="unpinned ${wt(was)}"></i>` : ''}<button class="dot" style="left:${pos(c.pct)}%" aria-label="${esc(c.el)} ${wt(c.pct)} wt%. Drag, or use arrow keys, to pin a value"></button></div>
       <span class="val"><span class="num">${wt(c.pct)}</span><small>${pinned ? `pinned<button class="unpin" data-el="${esc(c.el)}">unpin</button><br>` : ''}${lim}${c.target !== null ? ` · aim ${wt(c.target)}` : ''}</small></span></div>`;
   }
 
+  // ---- charge makeup, grouped by melt class (F1), with change vs unpinned when pins are active (F2) ----
+  const GROUPS = [['primary', 'Primary'], ['hardener', 'Hardeners'], ['internal_scrap', 'Internal scrap'], ['purchased_scrap', 'Purchased scrap']];
+  let collapsed = new Set();
+  try { collapsed = new Set(JSON.parse(localStorage.getItem('alloy.collapsed') || '[]')); } catch {}
+  const sgn = (v, f) => { const t = f(Math.abs(v)); return (/[1-9]/.test(t) ? (v > 0 ? '+' : '−') : '') + t; }; // no sign on a value that rounds to zero
+  const delta = d => Math.abs(d) < 0.5 ? '<span class="tag">—</span>' : `<span class="chg">${d > 0 ? '▲' : '▼'} ${sgn(d, lbs)}</span>`;
+  function topMovers(P, n) {
+    return P.changes.slice().sort((a, b) => Math.abs(b.dCost) - Math.abs(a.dCost)).slice(0, n)
+      .map(c => `${sgn(c.dLbs, lbs)} lbs ${esc(c.name)} (${sgn(c.dCost, usd)})`).join(', ');
+  }
+  function recipeCard(out, sc, note) {
+    const R = out.result, P = out.pins, M = R.meltLbs;
+    const chg = P && P.baseline ? Object.fromEntries(P.changes.map(c => [c.id, c])) : null;
+    const binding = new Set(out.binding.map(b => b.row));
+    const gl = Object.fromEntries(Core.groupLimits(sc).map(g => [g.key, g]));
+    const limTxt = (key, share) => {
+      const g = gl[key]; if (!g || (g.min <= 0 && g.max >= 100)) return '';
+      const at = binding.has(`grpmin_${key}`) || binding.has(`grpmax_${key}`);
+      return ` · limit ${g.min > 0 && g.max < 100 ? `${g.min}–${g.max}%` : g.min > 0 ? `≥ ${g.min}%` : `≤ ${g.max}%`}${at ? ' <span class="bad">at limit</span>' : ''}`;
+    };
+    const used = R.recipe.filter(r => r.lbs > 0.5);
+    const maxL = Math.max(1, ...used.map(r => r.lbs));
+    const cols = chg ? 6 : 5;
+    const groups = GROUPS.map(([k, label]) => {
+      const items = used.filter(r => r.melt_class === k).sort((a, b) => b.lbs - a.lbs);
+      const gone = chg ? P.changes.filter(c => c.melt_class === k && c.to < 0.5 && c.from >= 0.5) : [];
+      const sum = f => items.reduce((s, r) => s + f(r), 0);
+      const gl_ = sum(r => r.lbs), gc = sum(r => r.cost), gm = sum(r => r.meltLbs);
+      const gd = chg ? P.changes.filter(c => c.melt_class === k).reduce((s, c) => s + c.dLbs, 0) : 0;
+      return { k, label, items, gone, lbs: gl_, cost: gc, melt: gm, d: gd };
+    });
+    const bar = groups.filter(g => g.lbs > 0.5).map(g => `<i style="flex:${g.lbs.toFixed(1)} 1 0;--c:var(--s-${g.k})" title="${esc(g.label)} ${(g.lbs / R.chargeLbs * 100).toFixed(1)}% of charge"></i>`).join('');
+    const row = r => {
+      const c = chg?.[r.id];
+      return `<tr class="item" data-g="${r.melt_class}"${collapsed.has(r.melt_class) ? ' hidden' : ''}><td>${esc(r.name)}${c && c.from < 0.5 ? '<span class="pill new">new</span>' : ''}<div class="tag">${esc(r.id)}${r.locked ? `<span class="pill">must use, exactly ${lbs(r.minLbs)}</span>` : r.mandated ? `<span class="pill">must use, ≥ ${lbs(r.minLbs)}</span>` : ''}${r.atUpper && !r.locked ? ' · <span class="bad">all available used</span>' : ''}</div><div class="share"><i style="width:${r.lbs / maxL * 100}%;background:var(--s-${r.melt_class})"></i></div></td>
+        <td class="n">${lbs(r.lbs)}</td><td class="n">${r.pctCharge.toFixed(1)}%</td><td class="n">${r.unitCost.toFixed(2)}</td><td class="n">${usd(r.cost)}</td>${chg ? `<td class="n">${delta(c?.dLbs || 0)}</td>` : ''}</tr>`;
+    };
+    const goneRow = c => `<tr class="item gone" data-g="${c.melt_class}"${collapsed.has(c.melt_class) ? ' hidden' : ''}><td><s>${esc(c.name)}</s><div class="tag">${esc(c.id)} · dropped by the pin (was ${lbs(c.from)} lbs)</div></td><td class="n">0</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">${delta(c.dLbs)}</td></tr>`;
+    const body = groups.map(g => `<tbody class="grp">
+      <tr class="ghead"><td><button class="gtog" data-g="${g.k}" aria-expanded="${!collapsed.has(g.k)}"><span class="caret" aria-hidden="true">▾</span><i class="sw" style="--c:var(--s-${g.k})"></i>${esc(g.label)}<span class="tag"> · ${g.items.length ? `${g.items.length} item${g.items.length > 1 ? 's' : ''}` : 'none used'}</span></button>
+        <div class="tag">${(g.melt / M * 100).toFixed(1)}% of melt${limTxt(g.k === 'hardener' || g.k === 'purchased_scrap' ? '' : g.k)}</div></td>
+        <td class="n">${lbs(g.lbs)}</td><td class="n">${(g.lbs / R.chargeLbs * 100).toFixed(1)}%</td><td class="n">${g.lbs > 0.5 ? (g.cost / g.lbs).toFixed(3) : '—'}</td><td class="n">${usd(g.cost)}</td>${chg ? `<td class="n">${delta(g.d)}</td>` : ''}</tr>
+      ${g.items.map(row).join('')}${g.gone.map(goneRow).join('')}
+      ${g.k === 'purchased_scrap' ? `<tr class="gfoot"><td colspan="${cols}">All scrap (internal + purchased): ${(R.groupShare.scrap).toFixed(1)}% of melt${limTxt('scrap')}</td></tr>` : ''}
+    </tbody>`).join('');
+    const heel = R.heelLbs > 0 ? `<tbody><tr class="heelrow"><td colspan="${cols}"><i class="sw" style="--c:var(--s-heel)"></i>In furnace: ${lbs(R.heelLbs)} lbs ${sc.furnace.heelAlloy ? esc(sc.furnace.heelAlloy) + ' ' : ''}heel · ${(R.heelLbs / M * 100).toFixed(1)}% of melt · not charged, no cost</td></tr></tbody>` : '';
+    return `<h2>Charge makeup</h2>
+      <p class="note">Charged lbs before melt loss, by melt class. Group rows show the class total; average $/lb is cost ÷ lbs.${chg ? ' The last column is the change against the unpinned charge.' : ''}</p>
+      <div class="classbar" role="img" aria-label="${esc(groups.filter(g => g.lbs > 0.5).map(g => `${g.label} ${(g.lbs / R.chargeLbs * 100).toFixed(1)}%`).join(', '))} of charge">${bar}</div>
+      ${P ? `<div class="pinsum" aria-live="polite">${P.baseline ? `<b>Pins: ${sgn(P.delta, usd)} (${sgn(P.deltaPct, v => v.toFixed(2) + '%')})</b> vs unpinned.${P.changes.length ? ` Biggest changes: ${topMovers(P, 3)}.` : ' The charge is unchanged.'}` : 'No unpinned charge to compare with.'}${note ? `<div class="bad" id="pinNote">${note}</div>` : ''}</div>` : ''}
+      <div class="scroll"><table class="stack recipe"><thead><tr><th>Item</th><th class="n">lbs</th><th class="n">% charge</th><th class="n">$/lb</th><th class="n">Cost</th>${chg ? '<th class="n">Change vs unpinned</th>' : ''}</tr></thead>
+      ${heel}${body}
+      <tfoot><tr><td>Total charge · ${used.length} items</td><td class="n">${lbs(R.chargeLbs)}</td><td class="n">100%</td><td class="n">${(R.cost / R.chargeLbs).toFixed(3)}</td><td class="n">${usd(R.cost)}</td>${chg ? `<td class="n">${sgn(P.delta, usd)}</td>` : ''}</tr></tfoot></table></div>`;
+  }
+  $('out').addEventListener('click', ev => {
+    const b = ev.target.closest('.gtog'); if (!b) return;
+    const k = b.dataset.g, open = collapsed.has(k);
+    open ? collapsed.delete(k) : collapsed.add(k);
+    try { localStorage.setItem('alloy.collapsed', JSON.stringify([...collapsed])); } catch {}
+    b.setAttribute('aria-expanded', open);
+    b.closest('tbody').querySelectorAll('tr.item').forEach(r => r.hidden = !open);
+  });
+
   // ---- element contribution chart ----
-  const SRC = [['heel', 'Heel'], ['primary', 'Primary'], ['internal_scrap', 'Internal scrap'], ['purchased_scrap', 'Purchased scrap'], ['hardener', 'Hardener']];
+  const SRC = [['heel', 'Heel'], ['primary', 'Primary'], ['internal_scrap', 'Internal scrap'], ['purchased_scrap', 'Purchased scrap'], ['hardener', 'Hardeners']];
   let contribData = {};
   function contribChart(chem, recipe) {
     const cls = Object.fromEntries(recipe.map(r => [r.id, r.melt_class]));
@@ -203,7 +270,6 @@ addEventListener('error', e => { const s = document.getElementById('status'); if
     const R = out.result, C = out.cheapest;
     const bset = new Set(out.binding.map(b => b.row));
     const recipe = R.recipe.filter(r => r.lbs > 0.5).sort((a, b) => b.lbs - a.lbs);
-    const maxL = Math.max(...recipe.map(r => r.lbs));
     $('out').innerHTML = `
       <div class="kpis">
         <div class="kpi"><b>${usd(R.cost)}</b><span>Charge cost${out.mode === 'target' ? ` · cheapest is ${usd(C.cost)}` : ''}</span></div>
@@ -214,31 +280,29 @@ addEventListener('error', e => { const s = document.getElementById('status'); if
         <div class="kpi"><b>${R.solveMs.toFixed(0)} ms</b><span>solve time</span></div>
       </div>
       <div class="rgrid">
-        <div class="card"><h2>Charge recipe</h2><p class="note">Charged lbs before melt loss. Bars show each item's share of the charge.</p>
-          <div class="scroll"><table class="stack"><thead><tr><th>Item</th><th class="n">lbs</th><th class="n">% charge</th><th class="n">$/lb</th><th class="n">Cost</th></tr></thead><tbody>
-          ${recipe.map(r => `<tr><td>${esc(r.name)}<div class="tag">${esc(r.id)} · ${esc(CLASS[r.melt_class] || r.melt_class)}${r.locked ? `<span class="pill">must use, exactly ${lbs(r.minLbs)}</span>` : r.mandated ? `<span class="pill">must use, ≥ ${lbs(r.minLbs)}</span>` : ''}${r.atUpper && !r.locked ? ' · <span class="bad">all available used</span>' : ''}</div><div class="share"><i style="width:${r.lbs / maxL * 100}%"></i></div></td>
-            <td class="n">${lbs(r.lbs)}</td><td class="n">${r.pctCharge.toFixed(1)}%</td><td class="n">${r.unitCost.toFixed(2)}</td><td class="n">${usd(r.cost)}</td></tr>`).join('')}
-          </tbody></table></div></div>
+        <div class="card" id="recipeCard">${recipeCard(out, sc)}</div>
         <div class="card"><h2>Predicted chemistry vs ${esc(sc.alloy.name)}</h2>
-          <div class="legend"><span><i style="background:var(--band)"></i>spec range</span><span><i style="background:var(--blue);width:3px"></i>target</span><span><i style="background:var(--ink);border-radius:50%;width:10px"></i>predicted</span><span><i style="background:var(--red);border-radius:50%;width:10px"></i>at a limit</span><span><i style="border:3px solid var(--blue);border-radius:50%;width:12px;height:12px"></i>pinned</span></div>
+          <div class="legend"><span><i style="background:var(--band)"></i>spec range</span><span><i style="background:var(--blue);width:3px"></i>target</span><span><i style="background:var(--ink);border-radius:50%;width:10px"></i>predicted</span><span><i style="background:var(--red);border-radius:50%;width:10px"></i>at a limit</span><span><i style="border:3px solid var(--blue);border-radius:50%;width:12px;height:12px"></i>pinned</span>${out.pins ? '<span><i style="border:1.5px solid var(--mute);border-radius:50%;width:10px;height:10px;background:none"></i>unpinned value</span>' : ''}</div>
           <p class="note" style="margin-top:0">Drag a dot (or focus it and use the arrow keys) to pin that element and re-solve. Shift + arrow moves 0.1 wt%.</p>
           ${out.pins ? `<div class="pinbar"><span><b>Pinned</b> ${Object.entries(out.pins.values).map(([e, v]) => `${esc(e)} ${wt(v)}`).join(', ')}</span>
-            <span>${out.pins.delta === null ? 'no unpinned charge to compare' : `<b>${out.pins.delta >= 0 ? '+' : '−'}${usd(Math.abs(out.pins.delta))} (${out.pins.deltaPct >= 0 ? '+' : '−'}${Math.abs(out.pins.deltaPct).toFixed(2)}%)</b> · ${out.pins.delta >= 0 ? '+' : '−'}$${Math.abs(out.pins.delta / C.meltLbs).toFixed(4)}/lb melt vs unpinned cheapest (${usd(out.pins.unpinnedCost)})`}</span>
+            <span>${out.pins.delta === null ? 'no unpinned charge to compare' : `<b>${out.pins.delta >= 0 ? '+' : '−'}${usd(Math.abs(out.pins.delta))} (${out.pins.deltaPct >= 0 ? '+' : '−'}${Math.abs(out.pins.deltaPct).toFixed(2)}%)</b> · ${out.pins.delta >= 0 ? '+' : '−'}$${Math.abs(out.pins.delta / C.meltLbs).toFixed(4)}/lb melt vs unpinned (${usd(out.pins.unpinnedCost)})`}</span>
             <button class="ghost" id="clearPins">Clear pins</button></div>` : ''}
           ${out.validation.warnings.filter(w => /pinned/.test(w)).map(w => `<p class="note bad" style="margin:0 0 8px">${esc(w)}</p>`).join('')}
-          ${R.chem.map(c => gauge(c, bset)).join('')}</div>
+          ${R.chem.map(c => gauge(c, bset, out.pins?.baseline?.result.chem.find(b => b.el === c.el)?.pct)).join('')}</div>
       </div>
       <div class="card">${contribChart(R.chem, R.recipe)}</div>`;
     $('why').innerHTML = `
       <div>
-        <p class="note">From the cheapest-only solve. Saving = cost reduction from re-solving with that one limit relaxed by the step shown.</p>
-        <div class="grid"><div><div class="scroll"><table class="stack"><thead><tr><th>Binding constraint</th><th>Relax by</th><th class="n">Saving</th></tr></thead><tbody>
+        <h3>Binding constraints</h3>
+        <p class="note">Limits the cheapest charge is pressed against, from the cheapest-only solve. Saving = cost reduction from re-solving with that one limit relaxed by the step shown.</p>
+        <div class="scroll"><table class="stack why"><thead><tr><th>Binding constraint</th><th>Relax by</th><th class="n">Saving</th></tr></thead><tbody>
           ${(out.marginals || []).map(m => `<tr><td>${esc(m.label)}</td><td>${esc(m.step)}</td><td class="n">${usd(m.saving)}</td></tr>`).join('') || '<tr><td colspan="3">No binding limits.</td></tr>'}
           ${out.binding.filter(b => b.row.startsWith('furnace')).map(b => `<tr><td>${esc(b.label)}</td><td>—</td><td class="n">—</td></tr>`).join('')}
-        </tbody></table></div></div>
-        <div><div class="scroll"><table class="stack"><thead><tr><th>Unused item</th><th class="n">Now $/lb</th><th class="n">Enters below $/lb</th></tr></thead><tbody>
+        </tbody></table></div>
+        <h3 class="minor">Unused inventory</h3>
+        <div class="scroll"><table class="stack why"><thead><tr><th>Unused item</th><th class="n">Now $/lb</th><th class="n">Enters below $/lb</th></tr></thead><tbody>
           ${out.reducedCosts.sort((a, b) => a.reducedCost - b.reducedCost).map(r => `<tr><td>${esc(r.name)}<div class="tag">${esc(r.id)}</div></td><td class="n">${r.unitCost.toFixed(2)}</td><td class="n">${r.enterBelow > 0 ? r.enterBelow.toFixed(3) : 'never at ≥ $0'}</td></tr>`).join('') || '<tr><td colspan="3">Every item is used.</td></tr>'}
-        </tbody></table></div><p class="note">“Enters below” is the price at which an unused item would start to appear in the cheapest recipe (from HiGHS reduced costs).</p></div></div>
+        </tbody></table></div><p class="note">“Enters below” is the price at which an unused item would start to appear in the cheapest recipe (from HiGHS reduced costs).</p>
       </div>`;
   }
 
@@ -340,21 +404,50 @@ addEventListener('error', e => { const s = document.getElementById('status'); if
     const dot = tr.querySelector('.dot');
     if (!tr.querySelector('.ghost')) tr.insertAdjacentHTML('beforeend', `<i class="ghost" style="left:${dot.style.left}"></i>`);
     tr.setPointerCapture(ev.pointerId); tr.closest('.gauge').classList.add('drag');
-    drag = { tr, moved: false }; move(ev);
+    drag = { tr, moved: false, base: last?.out?.pins?.baseline || null, sc: currentScenario(), lastOk: null, t: 0, timer: null }; move(ev);
   });
   function move(ev) {
     if (!drag) return;
     const r = drag.tr.getBoundingClientRect();
     drag.v = setDot(drag.tr, (ev.clientX - r.left) / r.width * +drag.tr.dataset.hi); drag.moved = true;
+    // live preview, at most every 150 ms; the full solve runs on release
+    const wait = 150 - (performance.now() - drag.t);
+    clearTimeout(drag.timer);
+    if (wait <= 0) preview(); else drag.timer = setTimeout(preview, wait);
+  }
+  // Re-solve with the dragged value (no marginal re-solves) and update the makeup card and the other gauges in place.
+  function preview() {
+    if (!drag || !highs) return;
+    drag.t = performance.now();
+    const el = drag.tr.dataset.el, v = Math.round(drag.v * 1000) / 1000;
+    const sc = { ...drag.sc, chemPins: { ...chemPins, [el]: v } };
+    let out;
+    try { out = Core.solveScenario(highs, sc, { mode: $('mode').value, costTolPct: +$('tol').value || 0, marginals: false, baseline: drag.base || undefined }); }
+    catch { return; }
+    if (out.status === 'optimal') {
+      if (!drag.base && out.pins?.baseline) drag.base = out.pins.baseline;
+      drag.lastOk = { v, out };
+      $('recipeCard').innerHTML = recipeCard(out, sc);
+      for (const c of out.result.chem) {
+        const tr = document.querySelector(`.track[data-el="${CSS.escape(c.el)}"]`);
+        if (tr && tr !== drag.tr) setDot(tr, c.pct);
+      }
+      $('status').textContent = `Preview · ${el} ${wt(v)}`;
+    } else {
+      const lastOk = drag.lastOk;
+      const note = `No in-spec charge with ${esc(el)} at ${wt(v)}${lastOk ? `; showing ${esc(el)} at ${wt(lastOk.v)}` : ''}.`;
+      if (lastOk) $('recipeCard').innerHTML = recipeCard(lastOk.out, { ...drag.sc, chemPins: { ...chemPins, [el]: lastOk.v } }, note);
+      $('status').textContent = `Preview · ${el} ${wt(v)} unreachable`;
+    }
   }
   $('out').addEventListener('pointermove', move);
   const endDrag = () => {
     if (!drag) return;
-    const { tr, v } = drag; drag = null; tr.closest('.gauge').classList.remove('drag');
+    const { tr, v } = drag; clearTimeout(drag.timer); drag = null; tr.closest('.gauge').classList.remove('drag');
     chemPins[tr.dataset.el] = Math.round(v * 1000) / 1000; resolve();
   };
   $('out').addEventListener('pointerup', endDrag);
-  $('out').addEventListener('pointercancel', () => { drag = null; resolve(); });
+  $('out').addEventListener('pointercancel', () => { if (drag) clearTimeout(drag.timer); drag = null; resolve(); }); // re-solve drops the unreleased preview
   $('out').addEventListener('keydown', ev => {
     const tr = ev.target.closest('.track[data-el]'); if (!tr || !ev.target.classList.contains('dot')) return;
     const step = ev.shiftKey ? 0.1 : 0.01;

@@ -52,7 +52,9 @@ td.n,th.n{text-align:right;white-space:nowrap}
 .share{height:6px;background:var(--panel);border-radius:3px;margin-top:5px}.share i{display:block;height:100%;background:var(--blue);border-radius:3px}
 .tag{font-size:12.5px;color:var(--mute)}
 /* Element contribution chart: one 100% bar per element, stacked by source; colour = melt class, 2px gaps split items. */
-.contrib{--s-heel:light-dark(#2a78d6,#3987e5);--s-primary:light-dark(#eb6834,#d95926);--s-internal_scrap:light-dark(#1baf7a,#199e70);--s-purchased_scrap:light-dark(#eda100,#c98500);--s-hardener:light-dark(#e87ba4,#d55181);margin-top:28px}
+/* Source-class colours, shared by the charge makeup card and the contribution chart (validated for CVD, both themes). */
+:root{--s-heel:light-dark(#2a78d6,#3987e5);--s-primary:light-dark(#eb6834,#d95926);--s-internal_scrap:light-dark(#1baf7a,#199e70);--s-purchased_scrap:light-dark(#eda100,#c98500);--s-hardener:light-dark(#e87ba4,#d55181)}
+.contrib{margin-top:28px}
 .cplot{position:relative;display:grid;grid-template-columns:2.6em minmax(0,1fr);gap:6px}
 .cy{position:relative;height:220px;font-size:12px;color:var(--mute)}.cy span{position:absolute;right:0;transform:translateY(50%)}
 .cbars{position:relative;height:220px;display:flex;gap:clamp(6px,2vw,16px);border-bottom:1px solid var(--mute)}
@@ -112,3 +114,24 @@ textarea{width:100%;min-height:220px;padding:10px;border:1px solid var(--rule);b
 .scroll{overflow-x:auto}
 details summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:center}
 @media(max-width:600px){table{font-size:13px}.gauge{grid-template-columns:2.6em minmax(0,1fr) 6.6em}.stack thead{display:none}.stack tr{display:grid;padding-block:10px}.stack td{display:flow-root;border:0;padding:3px 0;padding-inline-start:8em;text-align:start}.stack td::before{content:attr(data-l);float:inline-start;width:7.5em;margin-inline-start:-8em;white-space:normal;color:var(--mute)}.stack td:empty{display:none}}
+
+/* Charge makeup: class bar, group header rows, change column. */
+.classbar{display:flex;gap:2px;height:14px;margin:4px 0 12px}.classbar i{display:block;background:var(--c);min-width:2px}.classbar i:first-child{border-radius:4px 0 0 4px}.classbar i:last-child{border-radius:0 4px 4px 0}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--c);margin-right:6px;vertical-align:baseline}
+.recipe{width:100%}
+.recipe tr.ghead td{background:var(--panel);font-weight:600;border-top:1px solid var(--rule)}.recipe tr.ghead .tag{font-weight:400}
+.gtog{min-height:32px;padding:0;border:0;background:none;color:var(--ink);font-weight:600;text-align:left;cursor:pointer}
+.gtog .caret{display:inline-block;width:1em;color:var(--mute);transition:transform .15s}.gtog[aria-expanded=false] .caret{transform:rotate(-90deg)}
+.recipe tr.item td:first-child{padding-left:22px}
+.recipe tr.gone td{color:var(--mute)}
+.recipe tr.heelrow td,.recipe tr.gfoot td{font-size:13px;color:var(--mute);padding-block:6px}
+.recipe tfoot td{font-weight:700;border-top:2px solid var(--rule)}
+.chg{white-space:nowrap;font-weight:600}
+.pill.new{background:var(--ink);color:var(--bg)}
+.pinsum{background:var(--panel);border-left:3px solid var(--blue);border-radius:0 8px 8px 0;padding:8px 12px;margin:0 0 12px;font-size:14px}
+.track .was{position:absolute;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;border:1.5px solid var(--mute);pointer-events:none}
+@media(max-width:600px){.recipe tr.item td:first-child{padding-left:0}.recipe tr.ghead td:not(:first-child),.recipe tr.ghead td:empty{display:flow-root}}
+
+/* Why this recipe: binding constraints first, full width; unused inventory below, secondary. */
+table.why{width:100%}
+.tabpanel h3.minor{font-size:14px;color:var(--mute);margin-top:28px}

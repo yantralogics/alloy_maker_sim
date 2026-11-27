@@ -161,9 +161,49 @@
       assert(out.status === 'optimal', `status ${out.status}`);
       const pct = recompute(sc, out.result.recipe).pct;
       near(pct.Mg, 1.10, 1e-4, 'Mg pin'); near(pct.Si, 0.70, 1e-4, 'Si pin');
-      assert(out.pins && out.pins.delta !== null && out.pins.delta >= -0.01, 'pin delta should be ≥ 0 (pinning only adds constraints)');
+      assert(out.pins && out.pins.delta !== null, 'no pin delta');
+      // cheapest-only: pinning only adds constraints, so it cannot lower cost
+      const cOnly = Core.solveScenario(highs, Sample.scenario('6061', { chemPins: { Mg: 1.10, Si: 0.70 } }), { mode: 'cost', marginals: false });
+      assert(cOnly.pins.delta >= -0.01, `cost-mode pin delta ${cOnly.pins.delta}`);
       near(out.pins.deltaPct, out.pins.delta / out.pins.unpinnedCost * 100, 1e-9, 'delta %');
       return `Mg 1.10 + Si 0.70 → +$${out.pins.delta.toFixed(0)} (+${out.pins.deltaPct.toFixed(2)}%) vs unpinned`;
+    });
+
+    t('Pin changes per item add up to the cost change and the baseline recipe', () => {
+      for (const mode of ['cost', 'target']) {
+        const out = Core.solveScenario(highs, Sample.scenario('6061', { chemPins: { Mg: 1.15 } }), { mode, marginals: false });
+        assert(out.status === 'optimal', `${mode}: status ${out.status}`);
+        const P = out.pins, sum = P.changes.reduce((s, c) => s + c.dCost, 0);
+        near(sum, P.delta, 1, `${mode}: item cost changes vs total`);
+        near(P.unpinnedCost, P.baseline.result.cost, 1e-6, `${mode}: baseline cost`);
+        const before = Object.fromEntries(P.baseline.result.recipe.map(r => [r.id, r.lbs]));
+        for (const r of out.result.recipe) {
+          const c = P.changes.find(x => x.id === r.id);
+          near((before[r.id] || 0) + (c ? c.dLbs : 0), r.lbs, 0.5, `${mode}: ${r.id} lbs`);
+        }
+      }
+      const out = Core.solveScenario(highs, Sample.scenario('6061', { chemPins: { Mg: 1.15 } }), { mode: 'cost', marginals: false });
+      return out.pins.changes.slice().sort((a, b) => Math.abs(b.dCost) - Math.abs(a.dCost)).slice(0, 3).map(c => `${c.id} ${c.dLbs > 0 ? '+' : ''}${Math.round(c.dLbs)} lbs`).join(', ');
+    });
+
+    t('Pinning an element at its unpinned value changes nothing', () => {
+      for (const mode of ['cost', 'target']) {
+        const base = Core.solveScenario(highs, Sample.scenario('6061'), { mode, marginals: false });
+        for (const el of ['Mg', 'Fe', 'Cu']) {
+          const v = base.result.chem.find(c => c.el === el).pct;
+          const out = Core.solveScenario(highs, Sample.scenario('6061', { chemPins: { [el]: v } }), { mode, marginals: false });
+          const moved = out.pins.changes.reduce((s, c) => s + Math.abs(c.dLbs), 0);
+          assert(moved < 5, `${mode} ${el}: ${moved.toFixed(1)} lbs moved for a no-op pin`);
+          near(out.pins.delta, 0, 1, `${mode} ${el}: cost change`);
+        }
+      }
+    });
+
+    t('Reusing a baseline gives the same pinned result', () => {
+      const sc = Sample.scenario('6061', { chemPins: { Mg: 1.12 } });
+      const a = Core.solveScenario(highs, sc, { mode: 'target', marginals: false });
+      const b = Core.solveScenario(highs, sc, { mode: 'target', marginals: false, baseline: a.pins.baseline });
+      near(a.result.cost, b.result.cost, 1e-6, 'cost'); near(a.pins.delta, b.pins.delta, 1e-6, 'delta');
     });
 
     t('Unreachable pin is diagnosed as the cause', () => {

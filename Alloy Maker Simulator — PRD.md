@@ -192,6 +192,99 @@ The UI has three working views — Charge Simulator, Scenario Lab and Diagnostic
 - **Alloy spec library:** spec ranges, aims and internal limits per alloy; import from CSV.
 - **Furnace setup:** capacity, heel defaults.
 
+## Updated version capabilities
+
+### Shipped in v0.4 (A3, Nov 2026)
+
+- **Element contribution chart:** a 100% stacked bar per element showing which sources (heel, primary, hardener, internal scrap, purchased scrap) supply it, with a per-item breakdown on hover and a table view.
+- **Melt mix limits:** min / max % of melt for primary, internal scrap and all scrap (default 0–100%). Must-use, exact or excluded items that make a limit impossible are flagged before solving, and both the limit and the items are highlighted.
+- **Melt weight input:** a fixed melt weight (default 180,000 lbs, heel included). Leaving it blank lets the solver choose within furnace min fill and max.
+- **Pin cost impact:** shown in $, % and $/lb of melt against the unpinned cheapest charge.
+- **Sample library:** 50 inventory items, 10 alloys (2024, 3003, 5052, 5083, 6061, 6063, 6082, 7055, 7075, A356), and Zr as a tracked element.
+- **Layout:** setup sidebar (target, furnace and heel, melt mix, inventory drawer), with results beside it and secondary detail in tabs (Why this recipe, Inventory data, Advanced).
+
+### Shipped in v0.5 (A3, Nov 2026)
+
+#### F1. Charge makeup grouped by melt class
+
+**Problem.** The recipe is one flat list sorted by lbs. Users think in classes: how much primary are we buying, how much of our own returns are we using, how much hardener. Today they have to add that up themselves, and the melt mix limits they set in the sidebar are not visible next to the recipe.
+
+**Behaviour**
+
+- The recipe table is split into four groups, always in this order: Primary, Hardeners, Internal scrap, Purchased scrap.
+- Each group has a header row showing:
+  - total lbs charged
+  - % of charge
+  - % of melt
+  - cost
+  - average $/lb
+- Item rows sit under their group, sorted by lbs.
+- Groups can be collapsed. All start expanded, and the choice is remembered per browser.
+- A group with nothing charged stays visible as one muted row ("Primary: none used"), so a zero is a visible answer rather than a missing row.
+- The heel is shown above the groups as a context row ("In furnace: 20,000 lbs 6063 heel"). It has no cost and is not counted in % of charge.
+- If a melt mix limit applies to a group, its header shows the limit next to the share, e.g. "16.2% of melt · limit ≤ 30%".
+  - When the limit is binding, it is marked the same way a binding element limit is.
+  - The all-scrap limit covers two groups, so it is shown once, in a footer under Purchased scrap.
+- A single 100% bar at the top of the card shows the charge split by class. It uses the same class colours as the element contribution chart, so the two read as one system.
+
+**Acceptance criteria**
+
+- The group subtotals of lbs and cost each add up to the charge totals, within rounding.
+- A group's % of melt matches the "Now" value in the melt mix panel.
+- Grouping never changes the solve; it is display only.
+
+#### F2. Show how the charge makeup moves when an element is pinned
+
+**Problem.** Dragging a chemistry dot re-solves the charge and shows the cost change, but not *why* it cost that much. The user cannot see which items came in, which went out, and by how much. That is the part that builds trust in the result and teaches how the inventory behaves.
+
+**Baseline.** Changes are shown against the unpinned charge solved with the same objective, so the quantity changes and the $ / % cost change describe the same comparison.
+
+**Target-seeking budget under a pin.** In "cheapest, then closest to target" mode, the extra spend allowed for closeness to target is a percentage of the cheapest cost. A pin raises the cheapest cost, which would widen that allowance, and the solver would spend it moving the other elements. A pin that changes nothing would then still reshuffle the charge (about 19,600 lbs in testing). So a pinned charge may spend no more than the larger of its own cheapest cost and the unpinned charge's actual cost. The reported cost change is therefore what the pin itself costs.
+
+**Behaviour**
+
+- **Recipe changes.** While any pin is active, the recipe table gains a "Change vs unpinned" column.
+  - Each item shows a signed lbs change (+12,400 / −8,000) with ▲ / ▼, so the direction does not rely on colour alone.
+  - Items the pin brought in are tagged "new".
+  - Items it removed stay in the table as struck-through rows at 0 lbs, so a removed item does not silently disappear.
+  - Group header rows (F1) show their own subtotal change.
+- **Cost attribution.** Each item's cost change is its lbs change × its $/lb. Summed over the items, these equal the pin's total cost change.
+  - The pin bar names the largest contributors, e.g. "+$1,638 (+1.24%): +2,100 lbs Mg ingot (+$5,460), −10,000 lbs Mixed 6xxx (−$8,400) …", with the full list in the table.
+- **Live preview while dragging.**
+  - As the dot moves, the page re-solves at most every 150 ms with the marginal re-solves switched off. At about 5–10 ms per solve on 50 items, this stays responsive.
+  - The change column and cost update as the dot moves; releasing commits the pin and runs the full solve.
+  - The ghost marker keeps showing the pre-drag value, and the other elements' gauges show a ghost of their unpinned value, so knock-on chemistry changes are visible too.
+- **Unreachable pin during a drag.** If the pin value has no feasible charge, the preview freezes at the last feasible value and the gauge marks the unreachable range. It does not flash an infeasible screen mid-drag.
+
+**Acceptance criteria**
+
+- The item cost changes sum to the reported pin cost change, within $1.
+- Clearing all pins removes the change column and returns the recipe to the baseline exactly.
+- A preview never leaves a pin applied that the user did not release.
+
+**Alternative optima (resolved).** An LP often has several equally cheap recipes, so two solves that differ only by a pin can swap items the pin did not cause. After the pinned solve, one more LP picks, among charges with the same cost (and the same target closeness in target mode), the one nearest the baseline in total lbs moved. Cost and chemistry quality are unchanged; only unnecessary swaps are removed. Changes under 0.5 lb are not shown.
+
+**As built**
+- The pin summary sits above the recipe table and names the three biggest cost changes.
+- Live preview re-solves during a drag (at most every 150 ms). A cancelled drag re-solves without the dragged pin.
+- An unreachable value during a drag shows "No in-spec charge with Fe at 0.009; showing Fe at 0.263".
+- Tests check that:
+  - item cost changes sum to the total change
+  - a pin at the unpinned value moves less than 5 lbs and costs nothing extra
+  - reusing the baseline during a drag gives the same result
+
+#### F3. "Why this recipe" leads with binding constraints
+
+**Problem.** The tab gives binding constraints and unused inventory equal weight, side by side. Users rely on the binding constraints: they say which limits are costing money and what relaxing each one would save. The unused-item table, with the price at which an item would enter the charge, is rarely needed. In two columns, both tables are squeezed and the important one does not stand out.
+
+**Behaviour**
+- The binding constraint table takes the full width of the tab, first. Its columns are unchanged: constraint, relax by, saving.
+- The unused inventory table moves to its own row below it, also full width, under a smaller heading. Its columns are unchanged.
+- No solver change.
+
+**Acceptance criteria**
+- At every screen width, the binding constraint table comes first and is never side by side with the unused-item table.
+
 ## Requirements, phasing and open questions
 
 **Non-functional requirements**
@@ -225,3 +318,6 @@ The UI has three working views — Charge Simulator, Scenario Lab and Diagnostic
 - [ ] Should scrap composition uncertainty be modelled in v1 (e.g. solve to a safety margin inside spec)?
 - [ ] Where will real data come from — CSV exports from ERP/LIMS, or manual entry?
 - [ ] Is a single shared scenario store needed for teams, or is per-user storage enough for v1?
+- [x] F1: should group shares default to % of charge or % of melt? *Both are shown: % of charge in the column, % of melt under the group name, next to any melt mix limit.*
+- [ ] F2: is the baseline for changes always the unpinned charge, or should users also be able to compare against the previous pin position, step by step? *v0.5 uses the unpinned charge only.*
+- [x] F2: which alternative-optima mitigation is acceptable? *A lexicographic "closest to baseline" solve at equal cost and target closeness, so the charge's quality is never traded away.*
